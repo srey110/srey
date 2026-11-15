@@ -193,6 +193,8 @@ mk.bat m32        :: 32 位
 | `debug` | 调试控制台：`{ name, ip, port }` |
 | `harbor` | 跨服通信：`{ name, ssl, ip, port }`；跨节点身份由 mTLS 保证，`ssl` 填已注册的证书名，该证书须设 `SSL_VERIFY_PEER \| SSL_VERIFY_FAIL_IF_NO_PEER_CERT` |
 
+文件不存在时全部用内置默认值；单个字段非法时该字段用默认值并打一行提示。文件解析不了、根不是对象，或 `serviceid` / `harbor.ssl` 填了非法值时拒绝启动。这些提示在开日志之前打到标准输出，Windows 服务模式（`-r`）下看不到，装服务前先用 `srey -d` 前台跑一遍验配置。
+
 ---
 
 ## 核心概念

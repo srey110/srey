@@ -109,7 +109,8 @@ typedef struct watcher_ctx {
 #if defined(EV_KQUEUE)
     intptr_t evdata;            // 正在派发的那条 kevent 的 data：监听 socket 上是待 accept 的连接数，
                                 // UDP socket 上是排队中所有包的负载字节总和(0 字节包不计)，
-                                // TCP 读事件上是接收缓冲里的字节数；拿不到时为 0
+                                // TCP 读事件上是接收缓冲里的字节数；拿不到时为 0；
+                                // 监听丢了 knote 时置 -1，accept 不设每轮上限
 #endif
     events_t *events;           // 就绪事件数组
     ev_ctx *ev;                 // 所属ev_ctx
@@ -153,6 +154,10 @@ void _uev_drop_changes(watcher_ctx *watcher, evsock_ctx *evsk);
 void _uev_add_lsn_inloop(watcher_ctx *watcher, evsock_ctx *evsk);
 // 在事件循环内取消监听，引用计数归零后释放listener_ctx
 void _uev_remove_lsn(watcher_ctx *watcher, struct listener_ctx *lsn);
+#if defined(EV_KQUEUE)
+// 监听 socket 的 knote 丢了：摘表、关 fd 退出监听(不关的话内核照样替它完成握手、没人 accept)，清 ev_cb
+void _uev_lsn_lost(watcher_ctx *watcher, evsock_ctx *evsk);
+#endif
 // 尝试对已有连接启动SSL握手（支持延迟到发送完毕）
 void _uev_try_ssl_exchange(watcher_ctx *watcher, evsock_ctx *evsk, struct evssl_ctx *evssl, int32_t client);
 // 对已握手的 TLS1.3 连接排程一次 KeyUpdate，契约见 event.h 的 ev_keyupdate

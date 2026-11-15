@@ -16,6 +16,7 @@ typedef struct fake_conn {
     int32_t dirty;        // 1=带着没结束的会话状态，reset 时清掉
     int32_t resets;       // reset 实际清理的次数（干净时不算）
     int32_t fail_reset;   // >0 时本次 reset 失败并递减
+    int32_t drop_on_reset; // 1=reset 清理成功后连接随即断开（应答收到后服务端断开），只生效一次
     uint32_t connect_ms;  // connect 里模拟的耗时
     uint32_t op_ms;       // >0 时 ping / quit / reset 挂起这么久，要配 task
     task_ctx *task;       // op_ms 挂起用
@@ -72,6 +73,10 @@ static int32_t _fake_reset(void *conn) {
         return ERR_FAILED;
     }
     f->dirty = 0;
+    if (0 != f->drop_on_reset) {
+        f->drop_on_reset = 0;
+        f->ready = 0;
+    }
     return ERR_OK;
 }
 static const db_pool_ops _fake_ops = {
@@ -896,6 +901,75 @@ static int32_t _test_lifetime_handoff(task_ctx *task) {
     return rtn;
 }
 
+// reset 清理成功、连接却在此期间断了：不能把死连接交接给等待者，等待者拿到的是重连过的
+static void _rd_holder(void *owner, void *arg) {
+    task_ctx *task = (task_ctx *)owner;
+    worker_arg *a = (worker_arg *)arg;
+    void *conn = NULL;
+    a->rtn = db_pool_get(a->sh->pool, 0, &conn);
+    if (ERR_OK != a->rtn) {
+        return;
+    }
+    fake_conn *f = (fake_conn *)conn;
+    f->dirty = 1;
+    f->drop_on_reset = 1;
+    coro_sleep(task, a->hold_ms);
+    db_pool_put(a->sh->pool, conn);
+}
+static void _rd_waiter(void *owner, void *arg) {
+    (void)owner;
+    worker_arg *a = (worker_arg *)arg;
+    void *conn = NULL;
+    a->rtn = db_pool_get(a->sh->pool, 0, &conn);
+    if (ERR_OK != a->rtn) {
+        return;
+    }
+    if (0 == _fake_ready(conn)) {
+        a->rtn = ERR_FAILED;// 交出来的是断了的
+    }
+    db_pool_put(a->sh->pool, conn);
+}
+static int32_t _test_reset_drop_handoff(task_ctx *task) {
+    fake_conn c1;
+    ZERO(&c1, sizeof(c1));
+    db_pool_cfg cfg = { .cap = 1, .backoff_ms = 20 };
+    db_pool_ctx *pool = db_pool_new(task, &_fake_ops, &cfg);
+    if (NULL == pool
+        || ERR_OK != db_pool_add(pool, &c1)) {
+        LOG_ERROR("%s", "pool reset drop: setup failed.");
+        if (NULL != pool) {
+            db_pool_free(pool);
+        }
+        return ERR_FAILED;
+    }
+    pool_shared sh;
+    ZERO(&sh, sizeof(sh));
+    sh.pool = pool;
+    worker_arg holder, waiter;
+    ZERO(&holder, sizeof(holder));
+    ZERO(&waiter, sizeof(waiter));
+    holder.sh = &sh;
+    holder.hold_ms = 30;// 等待者先排上队
+    waiter.sh = &sh;
+    coro_fn fns[2] = { _rd_holder, _rd_waiter };
+    void *args[2] = { &holder, &waiter };
+    int32_t rtn = ERR_OK;
+    if (ERR_OK != coro_fork_wait(coro_task_co(task), fns, args, 2)) {
+        LOG_ERROR("%s", "pool reset drop: coro_fork_wait failed.");
+        rtn = ERR_FAILED;
+    }
+    if (ERR_OK != holder.rtn
+        || ERR_OK != waiter.rtn
+        || 1 != c1.resets
+        || 2 != c1.connects) {
+        LOG_ERROR("pool reset drop: rtn=%d/%d resets=%d connects=%d, want 0/0 1 2.",
+                  holder.rtn, waiter.rtn, c1.resets, c1.connects);
+        rtn = ERR_FAILED;
+    }
+    db_pool_free(pool);
+    return rtn;
+}
+
 // 有连接借出、空闲的在冷却：不快速失败，排队等归还或冷却到期
 static void _cw_holder(void *owner, void *arg) {
     worker_arg *a = (worker_arg *)arg;
@@ -970,9 +1044,14 @@ static int32_t _test_backoff_double(task_ctx *task) {
     (void)db_pool_get(pool, 0, &conn);// t0 第 1 次失败：冷却 100ms
     coro_sleep(task, 150);
     (void)db_pool_get(pool, 0, &conn);// t150 第 2 次失败：冷却 200ms，到 t350
+    timer_ctx tm;
+    timer_init(&tm);
+    uint64_t t2 = timer_cur_ms(&tm);
     coro_sleep(task, 100);
-    if (ERR_OK == db_pool_get(pool, 0, &conn)// t250 仍在冷却；不翻倍的话 t250 早过了
-        || 2 != c1.connects) {
+    // t250 仍在冷却；不翻倍的话 t250 早过了。机器忙、晚醒到第 2 次冷却已过就跳过这条
+    if (timer_cur_ms(&tm) - t2 < 190
+        && (ERR_OK == db_pool_get(pool, 0, &conn)
+            || 2 != c1.connects)) {
         LOG_ERROR("pool backoff double: connects=%d, want 2 (second cool not doubled).", c1.connects);
         rtn = ERR_FAILED;
     }
@@ -1442,6 +1521,12 @@ static void _startup_run(task_ctx *task) {
         return;
     }
     if (ERR_OK != _test_lifetime_handoff(task)) {
+        return;
+    }
+    if (task_isclosing(task)) {
+        return;
+    }
+    if (ERR_OK != _test_reset_drop_handoff(task)) {
         return;
     }
     if (task_isclosing(task)) {

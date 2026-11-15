@@ -361,7 +361,7 @@ runner.run(function(t)
     -- 随后再发两条 PUBLISH（带载荷 / 空载荷），比 mqtt.publish 的默认形态与 raw 形态
     do
         local PORT = 15051
-        local got, disc
+        local got, disc, auth
         local pubs = {}
         srey.on_recved(function(_, _, client, _, data, _)
             if 0 ~= client then
@@ -371,12 +371,17 @@ runner.run(function(t)
                 disc = mqtt.disconnect(data)
                 return
             end
+            if mqtt.PROT.AUTH == mqtt.prot(data) then
+                auth = mqtt.auth(data)
+                return
+            end
             if mqtt.PROT.PUBLISH == mqtt.prot(data) then
                 -- raw 形态的载荷是借用指针，只在本回调内有效，当场转成串
                 local p = { str = table.pack(mqtt.publish(data)), raw = table.pack(mqtt.publish(data, 1)) }
                 p.rawtype = type(p.raw[6])
                 p.rawstr = p.raw[6] and srey.ud_str(p.raw[6], p.raw[7]) or nil
                 p.disc = mqtt.disconnect(data)
+                p.auth = mqtt.auth(data)
                 pubs[#pubs + 1] = p
                 return
             end
@@ -422,11 +427,14 @@ runner.run(function(t)
                 srey.send(sk, pack, size, 0)
                 pack, size = mqtt.pack_publish(mqtt.VERSION.V50, 0, 0, 0, "/empty", 0, "")
                 srey.send(sk, pack, size, 0)
+                -- 重新认证 0x19，同样避开 0
+                pack, size = mqtt.pack_auth(mqtt.VERSION.V50, 0x19, nil)
+                srey.send(sk, pack, size, 0)
                 -- 原因码 4(带遗嘱断开)，不用 0：0 分不出"取到了"与"没可变报头按 0 算"
                 pack, size = mqtt.pack_disconnect(mqtt.VERSION.V50, 4, nil)
                 srey.send(sk, pack, size, 0)
                 for _ = 1, 60 do
-                    if got and #pubs >= 2 and disc then break end
+                    if got and #pubs >= 2 and disc and auth then break end
                     srey.sleep(50)
                 end
                 srey.close(sk)
@@ -453,9 +461,11 @@ runner.run(function(t)
         end
         t:eq(2, #pubs, "服务端收到两条 PUBLISH")
         t:eq(4, disc, "mqtt.disconnect 取到 DISCONNECT 的原因码")
+        t:eq(0x19, auth, "mqtt.auth 取到 AUTH 的原因码")
         local p = pubs[1]
         if p then
             t:eq(nil, p.disc, "mqtt.disconnect 对 PUBLISH 返回 nil")
+            t:eq(nil, p.auth, "mqtt.auth 对 PUBLISH 返回 nil")
             t:eq(7, p.str.n, "publish 返回 7 个值")
             t:eq(7, p.raw.n, "publish raw 同样返回 7 个值")
             t:eq("0,2,1,7,/pub", table.concat(p.str, ",", 1, 5), "publish dup/qos/retain/packid/topic")

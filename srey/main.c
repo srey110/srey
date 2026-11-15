@@ -11,7 +11,9 @@
     #endif
     #define WINSV_STOP_TIMEOUT (30 * 1000) // Windows 服务停止超时时间（毫秒）
     #define WINSV_START_TIMEOUT (30 * 1000) // Windows 服务启动超时时间（毫秒）
-    #define WINSV_INIT_FAILED 1 // service_init 失败报给 SCM 的 service-specific 码(loader_exit 请求的退出也可能报 1)；具体原因只在日志里
+    // service_init 失败报给 SCM 的 service-specific 码(loader_exit 请求的退出也可能报 1)。开日志之后的失败原因在日志里；
+    // 之前的(配置非法拒启动、serviceid 出错)只打到标准输出，服务模式下不留，装服务前先用 -d 前台跑一遍验配置
+    #define WINSV_INIT_FAILED 1
     typedef int32_t(*_wsv_cb)(void); // Windows 服务初始化/退出回调函数类型
 
     // 三个都定义在本文件下方; 两张回调表挪到文件头后必须先声明, 否则是引用未声明标识符
@@ -69,8 +71,9 @@ static char *_config_read(size_t *lens) {
     }
     return info;
 }
-// 解析配置文件，将各字段填充到 config_ctx（解析失败时使用默认值）。
-// 唯一例外是 harbor.ssl 在但非法：它的默认空串就是明文，回落即降级，返回 ERR_FAILED 让进程起不来
+// 解析配置文件，将各字段填充到 config_ctx。文件不存在或读不了时全用默认值，单个字段非法时该字段用默认值。
+// 文件读到了却解析不了、根不是对象，或 serviceid / harbor.ssl 在但非法时返回 ERR_FAILED 让进程起不来：
+// 回落会静默改义(整份配置换成默认、ID 与别的节点撞号、harbor 降级成明文)
 static int32_t _parse_config(config_ctx *cnf) {
     size_t lens;
     char *config = _config_read(&lens);
@@ -81,17 +84,27 @@ static int32_t _parse_config(config_ctx *cnf) {
     yyjson_doc *doc = yyjson_read_opts(config, lens, YYJSON_READ_ALLOW_BOM, NULL, &erro);
     FREE(config);
     if (NULL == doc) {
-        PRINT("parse config error at byte %zu: %s", erro.pos, erro.msg);
-        return ERR_OK;
+        PRINT("parse config error at byte %zu: %s, refuse to start.", erro.pos, erro.msg);
+        return ERR_FAILED;
     }
     yyjson_obj_iter it;
     yyjson_obj_iter sub;
     if (!yyjson_obj_iter_init(yyjson_doc_get_root(doc), &it)) {
-        PRINT("config root is not an object, use default.");
+        PRINT("config root is not an object, refuse to start.");
         yyjson_doc_free(doc);
-        return ERR_OK;
+        return ERR_FAILED;
     }
-    CFG_NUM(&it, "", "serviceid", SERVICEID_MAX, cnf->serviceid, uint16_t);
+    yyjson_val *jv = yyjson_obj_iter_get(&it, "serviceid");
+    if (NULL != jv) {
+        double num;
+        if (ERR_OK != json_val_num_range(jv, 0, SERVICEID_MAX, &num)
+            || num != (double)(uint16_t)num) {
+            PRINT("serviceid invalid, refuse to start.");
+            yyjson_doc_free(doc);
+            return ERR_FAILED;
+        }
+        cnf->serviceid = (uint16_t)num;
+    }
     CFG_NUM(&it, "", "nnet", UINT16_MAX, cnf->nnet, uint16_t);
     CFG_NUM(&it, "", "nworker", UINT16_MAX, cnf->nworker, uint16_t);
     CFG_NUM(&it, "", "loglv", LOGLV_DEBUG, cnf->loglv, uint8_t);
@@ -101,7 +114,7 @@ static int32_t _parse_config(config_ctx *cnf) {
     CFG_STR(&it, "", "dns", cnf->dns);
     CFG_STR(&it, "", "script", cnf->script);
     // debug / harbor 各为嵌套对象，在但不是对象时同字段非法一样提示
-    yyjson_val *jv = yyjson_obj_iter_get(&it, "debug");
+    jv = yyjson_obj_iter_get(&it, "debug");
     if (yyjson_obj_iter_init(jv, &sub)) {
         CFG_STR(&sub, "debug.", "name", cnf->debug.name);
         CFG_STR(&sub, "debug.", "ip", cnf->debug.ip);
@@ -345,8 +358,8 @@ static void _stop_sh_remove(const char *sh) {
 // 注册信号处理、启动服务并阻塞等待退出信号，返回进程退出码
 // ready_fd：daemon 化父子同步 pipe 写端，-1 表示无需通知（Windows / -d 前台模式）；
 // service_init 成功时写 'R' 通知父进程；失败时仅 close 让父进程 read 返 0 (EOF) 即知失败
-// devnull >= 0 时把标准 IO 接到它上面，但只在 service_init 成功之后——配置诊断全走 PRINT
-// 且排在 _open_log 之前，提前接过去的话配置错的 daemon 既不打终端也不进日志文件地静默起来
+// devnull >= 0(守护模式)时 setsid 脱离终端、把标准 IO 接到它上面，但都只在 service_init 成功之后：配置诊断全走 PRINT
+// 且排在 _open_log 之前，提前接过去的话配置错的 daemon 静默起来；启动期间还在前台进程组，Ctrl+C 父子一起打断
 // sh 非 NULL 时 service_init 成功才写停止脚本、退出时删；失败不碰它，免得顶掉同目录在跑的实例的
 static int32_t service_hug(int32_t ready_fd, int32_t devnull, const char *sh) {
     if (ERR_OK != hug_init(&_hug)) {
@@ -371,6 +384,9 @@ static int32_t service_hug(int32_t ready_fd, int32_t devnull, const char *sh) {
     }
     if (devnull >= 0) {
         if (ERR_OK == rtn) {
+            if ((pid_t)-1 == setsid()) {
+                LOG_WARN("setsid error: %s", ERRORSTR(errno));
+            }
             dup2(devnull, STDIN_FILENO);
             dup2(devnull, STDOUT_FILENO);
             dup2(devnull, STDERR_FILENO);
@@ -444,7 +460,8 @@ static int32_t _wsv_runfuncs(_wsv_cb *funcs) {
 }
 // Windows 服务控制事件处理函数（停止/关机时唤醒主线程）
 // SCM 线程上下文不是真 signal handler, 直接走 hug_wakeup 即可。
-// 这里不打日志：SCM 线程不受 log_free 的 join 管，服务恰好自己退出时会撞上正在释放的日志队列
+// 这里不打日志：SCM 线程不受 log_free 的 join 管，服务恰好自己退出时会撞上正在释放的日志队列。
+// 收尾卡住时没有前台那种二次强退：SCM 对停止中的服务拒发控制，只能结束进程
 static DWORD WINAPI _wsv_event(DWORD req, DWORD event, LPVOID eventdata, LPVOID context) {
     switch (req) {
     case SERVICE_CONTROL_STOP:
@@ -469,6 +486,10 @@ static void WINAPI _wsv_service(DWORD argc, LPTSTR *argv) {
         return;
     }
     psvstatus = RegisterServiceCtrlHandlerExA(argv[0], _wsv_event, NULL);
+    if (NULL == psvstatus) {
+        hug_free(&_hug);
+        return;
+    }
     DWORD win32err = ERROR_SERVICE_SPECIFIC_ERROR;
     svstatus.dwServiceSpecificExitCode = WINSV_INIT_FAILED;
     _wsv_pending(SERVICE_START_PENDING, WINSV_START_TIMEOUT);
@@ -682,12 +703,7 @@ int main(int argc, char *argv[]) {
         close(sync_pipe[0]);
         int32_t devnull = -1;
         if (is_daemon) {
-            //daemon 化：脱离控制终端，标准 IO 稍后由 service_hug 接到 /dev/null
-            if ((pid_t)-1 == setsid()) {
-                PRINT("setsid error: %s", ERRORSTR(errno));
-                close(sync_pipe[1]);
-                return ERR_FAILED;
-            }
+            //daemon 化：脱离控制终端(setsid)与标准 IO 接 /dev/null 都由 service_hug 在 init 成功后做
             //切换到 procpath()（已是绝对路径），避免工作目录被 unmount 时进程卡住
             if (0 != chdir(procpath())) {
                 PRINT("chdir error: %s", ERRORSTR(errno));

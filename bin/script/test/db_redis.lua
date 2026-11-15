@@ -172,7 +172,9 @@ runner.run(function(t)
         local hv = _exec(sk, "HELLO", "3")
         local ver = "table" == type(hv) and hv.version or ""
         local major, minor = tostring(ver):match("^(%d+)%.(%d+)")
-        if (tonumber(major) or 0) * 100 + (tonumber(minor) or 0) < 808 then
+        if not major then
+            t:fail("HELLO 3 取不到版本 " .. tostring(ver))-- 探测失败不能当成版本低跳过
+        elseif tonumber(major) * 100 + tonumber(minor) < 808 then
             printd("[db_redis] Redis 8.8 commands need 8.8+, case skipped (version %s)", tostring(ver))
         else
             _exec(sk, "DEL", "srey:increx", "srey:arr", "srey:xs")

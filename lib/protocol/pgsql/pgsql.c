@@ -38,18 +38,23 @@ void _pgsql_udfree(ud_cxt *ud) {
         return;
     }
     pgsql_ctx *pg = (pgsql_ctx *)ud->context;
+    // 服务端发 FATAL 后不跟 ReadyForQuery 就断(踢连接、空闲超时)，错误原文只剩这里看得到
+    if (NULL != pg->pack
+        && PGPACK_ERR == pg->pack->type) {
+        LOG_WARN("pgsql connection closed with a pending error: %s", NULL == pg->pack->pack ? "" : (const char *)pg->pack->pack);
+    }
     _pgsql_pkfree(pg->pack);
     pg->pack = NULL;
     pg->recvlens = 0;
     scram_free(pg->scram);
     pg->scram = NULL;
-    sock_mark_closed(&pg->sk);// 网络线程上写，理由见 sock_mark_closed
     pg->readyforquery = 0;
     pg->pid = 0;
     pg->keylens = 0;
 #if WITH_SSL
     pg->tls_cbind_len = 0;
 #endif
+    sock_mark_closed(&pg->sk);// 网络线程上写，理由见 sock_mark_closed；放在清字段之后，别的线程见失效即可能复用 ctx 重连
     ud->context = NULL;
     PROT_REF_RELEASE(pg);
 }
@@ -69,7 +74,7 @@ static int32_t _pgsql_startup(ev_ctx *ev, ud_cxt *ud) {
     pgsql_ctx *pg = (pgsql_ctx *)ud->context;
     size_t size;
     pg->protover = pg->protoreq;// 服务端回 NegotiateProtocolVersion 时再改小
-    void *startup = pgsql_pack_startup(pg->user, pg->database, pg->protoreq, &size);
+    void *startup = pgsql_pack_startup(pg->user, pg->database, pg->protover, &size);
     ud->status = AUTH;
     return ev_send(ev, &pg->sk, startup, size, 0);
 }
@@ -132,7 +137,7 @@ static void _pgsql_cbind_fill(pgsql_ctx *pg, X509 *cert) {
 int32_t _pgsql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud, void *ssl) {
 #if WITH_SSL
     if (NULL != ssl) {
-        X509 *cert = SSL_get_peer_certificate((SSL *)ssl);
+        X509 *cert = SSL_get1_peer_certificate((SSL *)ssl);
         if (NULL != cert) {
             _pgsql_cbind_fill((pgsql_ctx *)ud->context, cert);
             X509_free(cert);

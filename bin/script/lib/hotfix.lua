@@ -20,6 +20,8 @@
 --      (写 `local logger = print` 会被当成 helper 跳过嫁接,patch 从此绑到自己那份上,
 --      原 module 的 M.set_logger 再怎么改都看不到);要默认值就留空由 path-B 读原值
 --   5. 已 yield 的协程持有旧 closure reference,继续跑旧逻辑;新调用从 mod[name] 取走新版
+--   6. patch chunk 顶层不得调会挂起的接口(srey.request / srey.sleep 等):挂起期间别的协程看到改了一半的模块,
+--      apply 失败回滚时还会把这期间别人写进去的值顶回去
 -- 用法:
 --   local hotfix = require("lib.hotfix")
 --   local ok, msg = hotfix.apply("mymod", patch_source)

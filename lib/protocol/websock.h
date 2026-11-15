@@ -108,7 +108,8 @@ void *websock_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
 char *websock_pack_handshake(const char *host, const char *uri, const char *secprot, ws_hs_ctx **hsctx);
 /// <summary>
 /// ping包。对端发来的 PING 不会唤醒等回复的协程，走收包回调(队头是 coro_recv_any 时交给它)，由业务回 PONG；
-/// 不承载子协议时对端回的 PONG 照常可唤醒，发 PING 后可直接等它
+/// 不承载子协议时对端回的 PONG 照常可唤醒，对端不会主动推消息时发 PING 后可直接等它。
+/// 对端会推消息的连接上别同步等 PONG：分片消息中途插进来的 PONG 不唤醒等待者，推来的帧还会和它错配(见 coro_send)
 /// </summary>
 /// <param name="mask">1 掩码, 客户端向服务器发送数据都需要掩码, 0 无掩码</param>
 /// <param name="data">载荷，可为 NULL（此时 dlens 须为 0）</param>

@@ -45,7 +45,8 @@ void popen_close(popen_ctx *ctx);
 /// <summary>
 /// 释放；关闭后句柄置空，重复调用安全，此后 read/write 返回失败。
 /// 没调用过 popen_close 的话本函数替你调一次——free 一执行调用方就永久失去了子进程句柄，
-/// 不收尾就是永久孤儿（子进程自成进程组，终端信号也够不到它）
+/// 不收尾就是永久孤儿（子进程自成进程组，终端信号也够不到它）。本进程异常结束（崩溃、abort、强退、kill -9）
+/// 时这里来不及跑：Windows 上子进程随作业句柄关闭一起结束(作业建不上时有 WARN，同 POSIX)，POSIX 上留成孤儿
 /// </summary>
 /// <param name="ctx">popen_ctx</param>
 void popen_free(popen_ctx *ctx);

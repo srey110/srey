@@ -4,7 +4,7 @@ static int32_t _prt = 0;
 // 累计关闭次数，程序退出后由 main.c 读取验证 auto_close 路径是否被覆盖。
 // _closing 跑在 worker 线程，多轮 close 可落在不同 worker 上，故计数用 atomic
 static atomic_t _autoclose;
-// 累计"一轮调度结束"回调次数，验证 task_round_ended 挂上的回调确实被 loader 调到
+// 累计关闭期"一轮调度结束"回调次数，验证分发完 CLOSING 那轮 loader 也调了 round_end
 static atomic_t _roundend;
 
 uint32_t get_close_count(void) {
@@ -13,10 +13,11 @@ uint32_t get_close_count(void) {
 uint32_t get_round_end_count(void) {
     return (uint32_t)ATOMIC_GET(&_roundend);
 }
-// 一轮调度结束回调：计数加一
+// 一轮调度结束回调：只数关闭期的轮次，STARTUP 那轮(关闭在其后一秒)不算
 static void _round_end(task_ctx *task) {
-    (void)task;
-    ATOMIC_ADD(&_roundend, 1);
+    if (task_isclosing(task)) {
+        ATOMIC_ADD(&_roundend, 1);
+    }
 }
 // closing 回调：任务关闭时计数加一
 static void _closing(task_ctx *task) {

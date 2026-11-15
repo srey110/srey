@@ -272,8 +272,11 @@ static int32_t _lredis_unpack_multi(lua_State *lua, redis_pack_ctx *pk) {
     int32_t askey;
     for (pk = pk->next; NULL != pk; pk = pk->next) {
         if (0 == depth) {
-            // 顶层多值（attr 之后的数据）：顺序追加进结果
+            // 顶层多值（attr 之后的数据）：顺序追加进结果；数据是错误应答时同单节点，属性丢掉
             if (!_lredis_isagg(pk->prot)) {
+                if (_lredis_iserr(pk->prot)) {
+                    return _lredis_rtnerr(lua, pk);
+                }
                 _lredis_scalar(lua, pk);
                 _lredis_append(lua, 2);
                 continue;
@@ -338,12 +341,13 @@ static int32_t _lredis_unpack_multi(lua_State *lua, redis_pack_ctx *pk) {
 /// 把一条 RESP 回复（redis_pack_ctx 链表）整段转成 Lua 值。聚合转成表：array/set/push 为数组，
 /// map/attr 为键值表，键为 nil 或 NaN 的整对丢弃；写进表的 nil 一律写成 false（当值的 nil 聚合同样）。
 /// 嵌在聚合里的 attr 按顺序追加进所在的表（父为 map 也是追加到 #t + 1）。回复以 attr 开头时结果多包
-/// 一层数组：首个 attr 的表在前（空 attr 为空表，nil attr 不占位），其后的 attr 与数据依次追加。
+/// 一层数组：首个 attr 的表在前（空 attr 为空表，nil attr 不占位），其后的 attr 与数据依次追加；
+/// 数据是错误应答时同单节点，返回 false 与错误文本，属性丢掉。
 /// 多节点却不以聚合开头、聚合声明了元素却没有后继节点时打 WARN。
 /// 聚合里的错误元素（如 EXEC 结果）写成 { err = 错误文本 }，当 map 键时就是文本本身
 /// </summary>
 /// <param name="pk" type="lightuserdata?">回复首节点指针；nil 时返回 nil</param>
-/// <returns type="any">解包后的值：标量原样；空聚合为空表；nil 聚合、坏包与 pk 为 nil 时为 nil；错误应答为 false</returns>
+/// <returns type="any">解包后的值：标量原样；空聚合为空表；nil 聚合、坏包与 pk 为 nil 时为 nil；错误应答（含 attr 之后的）为 false</returns>
 /// <returns type="string?">错误应答的文本；其余情况没有这个返回值</returns>
 static int32_t _lredis_unpack(lua_State *lua) {
     redis_pack_ctx *pk = _lredis_opt(lua);

@@ -829,7 +829,6 @@ runner.run(function(t)
         -- 写入既然全被挡住，:data() 也就不会交出那份半成品
         t:eq(false, pcall(function() return b:data() end), "free 后 :data 仍被拒")
         b:free() -- 重复 free 幂等
-        t:check(true, "bson 重复 free 幂等")
     end
 
     -- ── binary 子类型的截断回归 ───────────────────────────────────────

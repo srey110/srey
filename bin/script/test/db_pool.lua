@@ -200,7 +200,8 @@ local function _run_mysql_session(t, factory)
         pool:free()
         return
     end
-    t:check(c:query("set autocommit=0"), "mysql_pool sess: set autocommit=0")
+    local rs = c:query("set autocommit=0")
+    t:check(rs and true == rs[1], "mysql_pool sess: set autocommit=0")
     c:query("select * from srey_pool_no_such_table")
     t:check(c:in_trans(), "mysql_pool sess: 语句回 ERR 后按在事务里算")
     pool:put(c)
@@ -236,6 +237,15 @@ local function _run_mongo_txn(t)
         pool:free()
         return
     end
+    -- 借用者置了 MORETOCOME 没清就归还：池的 reset_local 清掉(同 C 侧 _pool_flow)
+    c:set_flag(c.FLAGS.MORETOCOME)
+    pool:put(c)
+    c = pool:get(5000)
+    if not t:check(nil ~= c, "mongo_pool txn: flag 段再借到连接") then
+        pool:free()
+        return
+    end
+    t:eq(0, c:clear_flag(), "mongo_pool txn: 归还时清掉了 MORETOCOME")
     local sess = c:startsession()
     t:check(nil ~= sess and sess:begin(), "mongo_pool txn: begin 成功")
     pool:put(c)
@@ -280,6 +290,19 @@ local function _run_mongo_txn(t)
         end
     elseif c3 then
         pool:put(c3)
+    end
+    -- 借出期间连接断了再归还：池不调 reset_session，reset_local 照样清掉 flags，再借时重连(同 C 侧 _pool_flow)
+    local c5 = pool:get(5000)
+    if t:check(nil ~= c5, "mongo_pool txn: 断开段借到连接") then
+        c5:set_flag(c5.FLAGS.MORETOCOME)
+        srey.sync_close(c5.mongo:sock_id())
+        pool:put(c5)
+        local c6 = pool:get(5000)
+        t:check(nil ~= c6 and c6:ready(), "mongo_pool txn: 断开后归还再借到的已重连")
+        if c6 then
+            t:eq(0, c6:clear_flag(), "mongo_pool txn: 断开后归还也清掉了 MORETOCOME")
+            pool:put(c6)
+        end
     end
     pool:free()
 end

@@ -6,9 +6,9 @@
 // OP_MSG 头里 flagBits 的字节偏移：size / reqid / respto / opcode 各占 4 字节，见 _mongo_pack_msg
 #define MSG_FLAGS_OFF 16
 #define MONGO_MSG_HDR 21 // OP_MSG 头：size/reqid/respto/opcode/flags 各 4 字节 + kind 1 字节
-// commitTransaction / abortTransaction 按规范只能发往 admin 库，与连接当前的 $db 无关；
+// commitTransaction / abortTransaction / bulkWrite 按规范只能发往 admin 库，与连接当前的 $db 无关；
 // 发错库服务端回 code 13 Unauthorized "may only be run against the admin database"
-#define MONGO_TXN_DB "admin"
+#define MONGO_ADMIN_DB "admin"
 #define BSON_HEADROOM 256 // 大消息 cap 估算余量（命令名+集合名+元数据+session options 等）
 #define MONGO_READ_FLAGS 0 // 要等回包的命令写进包头的 flags：恒不带 MORETOCOME，与连接级 flags 无关
 // 组包长度上限：只防 OP_MSG 头的 int32 长度字段装不下。收包上限 MONGO_MAX_PACK_LENS 不管组包，对端上限与本地无关
@@ -146,6 +146,18 @@ static inline int32_t _mongo_cap_toolong(size_t cap) {
     }
     LOG_ERROR("mongo document exceeds %d bytes: %zu.", MONGO_PACK_MAX, cap);
     return 1;
+}
+// 调用方 options 里有没有顶层字段 key；options 须已过 MONGO_PACK_CAT 的校验
+static int32_t _mongo_opt_has(char *options, size_t optlens, const char *key) {
+    if (EMPTYPTR(options, optlens)) {
+        return 0;
+    }
+    bson_ctx opt;
+    bson_init(&opt, options, optlens);
+    bson_iter iter;
+    bson_iter_init(&iter, &opt);
+    bson_iter found;
+    return ERR_OK == bson_iter_find(&iter, key, &found);
 }
 // 在已闭合的正文后追加一个 kind 1 段：kind + 段长 + 标识符 + 数组各元素(须都是文档)依次排开。
 // 数组只过了外层校验，逐个元素卡长度；有元素不是文档返回 ERR_FAILED
@@ -321,7 +333,7 @@ void *mongo_pack_bulkwrite(mongo_ctx *mongo, char *ops, size_t olens, char *nsin
     const mongo_seq seqs[2] = { { "ops", ops, olens }, { "nsInfo", nsinfo, nlens } };
     MONGO_PACK_CAT(options, optlens);
     TRANSACTION_OPTIONS_START
-    MONGO_PACK_RETURN_TXN_SEQ(mongo->db, mongo->flags, seqs, 2);
+    MONGO_PACK_RETURN_TXN_SEQ(MONGO_ADMIN_DB, mongo->flags, seqs, 2);
 }
 void *mongo_pack_find(mongo_ctx *mongo, char *filter, size_t flens, char *options, size_t optlens, size_t *size) {
     MONGO_PACK_BEGIN2(flens + BSON_HEADROOM, MONGO_OPT_EXTRA(optlens));
@@ -338,9 +350,12 @@ void *mongo_pack_aggregate(mongo_ctx *mongo, char *pipeline, size_t pllens, char
     MONGO_PACK_BEGIN2(pllens + BSON_HEADROOM, MONGO_OPT_EXTRA(optlens));
     bson_append_utf8(&bson, "aggregate", mongo->collection);
     MONGO_PACK_ARR("pipeline", pipeline, pllens);
-    const char *cursor = bson_empty(size);
-    bson_append_document(&bson, "cursor", cursor, *size);
     MONGO_PACK_CAT(options, optlens);
+    // 服务端要求必带 cursor；options 自带(如设首批 batchSize)就用它的，同名字段出现两次会被拒
+    if (!_mongo_opt_has(options, optlens, "cursor")) {
+        const char *cursor = bson_empty(size);
+        bson_append_document(&bson, "cursor", cursor, *size);
+    }
     TRANSACTION_OPTIONS_START
     MONGO_PACK_RETURN_TXN(mongo->db, MONGO_READ_FLAGS);
 }
@@ -452,10 +467,14 @@ int32_t mongo_session_stale(mongo_session *session) {
         && 0 == session->committing;
 }
 uint64_t mongo_txn_mark(mongo_ctx *mongo) {
-    return NULL == mongo->session ? MONGO_TXN_NONE : mongo->sk.skid;
+    return NULL == mongo->session ? MONGO_TXN_NONE : mongo->session->bindid;
 }
+// 组包时事务没作废(作废的组包就被拒)，故此刻作废即组包之后连接换过
 int32_t mongo_txn_moved(mongo_ctx *mongo, uint64_t mark) {
-    return MONGO_TXN_NONE != mark && mark != mongo->sk.skid;
+    return MONGO_TXN_NONE != mark
+        && (NULL == mongo->session
+            || mark != mongo->session->bindid
+            || 0 != _mongo_txn_stale(mongo));
 }
 char *mongo_transaction_options(mongo_session *session, size_t *lens) {
     // 只吐 doc 不打包消息，故不走 MONGO_PACK_BEGIN：那个宏的容量闸门要写 *size，本函数的出参叫 lens
@@ -496,7 +515,7 @@ void *mongo_pack_committransaction(mongo_session *session, char *options, size_t
     }
     MONGO_PACK_CAT(session->options, session->optionslens);
     MONGO_PACK_CAT(options, optlens);
-    _MONGO_PACK_TAIL(MONGO_TXN_DB, MONGO_READ_FLAGS);
+    _MONGO_PACK_TAIL(MONGO_ADMIN_DB, MONGO_READ_FLAGS);
     // 只有事务内容确定时才许跨重连重发：连接已断(前一条写没等到应答)或发过只发不等的写，都说不清服务端收了哪些
     if (NULL != _data
         && !sock_is_invalid(&mongo->sk)
@@ -516,5 +535,5 @@ void *mongo_pack_aborttransaction(mongo_session *session, char *options, size_t 
     // 事务已随重连作废也照发：事务挂在会话上而不是连接上，在新连接上中止一样作数，服务端当场放锁
     MONGO_PACK_CAT(session->options, session->optionslens);
     MONGO_PACK_CAT(options, optlens);
-    MONGO_PACK_RETURN(MONGO_TXN_DB, MONGO_READ_FLAGS);
+    MONGO_PACK_RETURN(MONGO_ADMIN_DB, MONGO_READ_FLAGS);
 }

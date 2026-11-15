@@ -17,6 +17,8 @@
 // accept 选项用例的端口，紧跟延迟关闭那组(15090~15095)之后
 #define ACP_OPTS_PORT 15096
 #define UDP_CLOSE_PORT 15097
+// accept 每轮上限用例的端口
+#define ACP_ROUND_PORT 15063
 // UDP 端口复用按需打开的用例：独占与共用各占一个端口
 #define UDP_EXCL_PORT 15059
 #define UDP_SHARE_PORT 15060
@@ -81,6 +83,13 @@
 // 发送队列超 MAX_SENDQ_CNT 断连的用例：端口，以及先塞满内核缓冲的那一大块
 #define SENDQ_PORT 15058
 #define SENDQ_BIG (1024 * 1024)
+// 对端只连不读的用例：明文与 TLS 各一个端口，服务端一共发的字节数与每块大小，以及 1 秒里进程 CPU 的上限(毫秒)。
+// 块要小：明文一次同步发送最多合 MAX_SEND_NIOV 块，合出上 MB 的大块时 Windows 回环会整个收下，服务端卡不住
+#define SLOW_RD_PORT 15085
+#define SLOW_RD_SSL_PORT 15086
+#define SLOW_RD_TOTAL (2 * 1024 * 1024)
+#define SLOW_RD_CHUNK (4 * 1024)
+#define SLOW_RD_CPU_MAX 300
 // 等隔离队列把对象真放掉：隔离期(QTN_MS)满后，最多再隔 EVENT_CHECK_INTERVAL 轮空等才收一次
 #define QTN_WAIT_MS (QTN_MS + EVENT_CHECK_INTERVAL * EVENT_WAIT_TIMEOUT + 200)
 #define SSL_MERGE_TOTAL (256 * 1024)
@@ -691,6 +700,49 @@ static void test_ev_accept_opts(CuTest *tc) {
     CuAssertIntEquals(tc, KEEPALIVE_TIME, (int32_t)ATOMIC_GET(&_g_acp_idle));
 #endif
 }
+// accept 每轮上限用例：已接受的连接数
+static atomic_t _g_acp_round_n;
+static int32_t _acp_round_on_accept(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud) {
+    (void)ev; (void)sk; (void)ud;
+    if (0 == ATOMIC_ADD(&_g_acp_round_n, 1)) {
+        MSLEEP(300);// 挡住事件线程，让后面的连接在 backlog 里一次排上好几轮的量
+    }
+    return ERR_OK;
+}
+// 水平触发下每轮最多接 ACCEPT_ROUND_MAX 条：一次排着好几轮的量时，剩下的要在后面几轮里接完，不能停住。
+// 边缘触发与 IOCP 不设上限，同样要全部接完
+static void test_ev_accept_round_cap(CuTest *tc) {
+    enum { NCONN = 3 * ACCEPT_ROUND_MAX + 5 };
+    ev_ctx ev;
+    cbs_ctx cbs;
+    uint64_t id;
+    SOCKET fds[NCONN];
+    int32_t nconn = 0;
+    ZERO(&cbs, sizeof(cbs));
+    cbs.acp_cb = _acp_round_on_accept;
+    cbs.r_cb = _acp_opts_on_recv;
+    ATOMIC_SET(&_g_acp_round_n, 0);
+    ev_init(&ev, 1, NULL);
+    int32_t lrtn = ev_listen(&ev, NULL, "127.0.0.1", ACP_ROUND_PORT, &cbs, NULL, NULL, 0, &id);
+    int32_t i;
+    for (i = 0; i < NCONN; i++) {
+        fds[i] = ERR_OK == lrtn ? _connect_local(ACP_ROUND_PORT, 0) : INVALID_SOCK;
+        if (INVALID_SOCK != fds[i]) {
+            nconn++;
+        }
+    }
+    for (i = 0; i < 3000 && (int32_t)ATOMIC_GET(&_g_acp_round_n) < nconn; i++) {
+        MSLEEP(1);
+    }
+    for (i = 0; i < NCONN; i++) {
+        CLOSE_SOCK(fds[i]);
+    }
+    ev_free(&ev);
+    // 断言放 ev_free 之后，理由同 test_ev_close_in_acp_conn_deferred
+    CuAssertIntEquals(tc, ERR_OK, lrtn);
+    CuAssertIntEquals(tc, NCONN, nconn);
+    CuAssertIntEquals(tc, NCONN, (int32_t)ATOMIC_GET(&_g_acp_round_n));
+}
 // UDP 用例：已投递的 datagram 数与关闭回调次数
 static atomic_t _g_udp_nrecv;
 static atomic_t _g_udp_nclose;
@@ -1073,7 +1125,7 @@ static void _cfail_on_close(ev_ctx *ev, sock_ctx *sk, int32_t client, int32_t er
     ATOMIC_ADD(&_g_cfail_closed, 1);
 }
 // 连接失败回调里把连接关掉了：调用方不能再摘除回收。否则同一个对象既在隔离队列里又回了池，
-// ev_free 时释放两次（glibc 直接报 double free）；关闭回调也只能来一次
+// ev_free 时释放两次（glibc 直接报 double free）；连接失败后也不该有关闭回调（见 evpub.h 的回调约定）
 static void test_ev_close_in_conn_fail(CuTest *tc) {
     ev_ctx ev;
     cbs_ctx cbs;
@@ -1090,16 +1142,16 @@ static void test_ev_close_in_conn_fail(CuTest *tc) {
     ev_init(&ev, 1, NULL);
     // 回环上连没人监听的端口：connect 先回 EINPROGRESS，被拒由事件报回来，走连接失败那条路
     crtn = ev_connect(&ev, NULL, "127.0.0.1", CONN_FAIL_PORT, &cbs, NULL, 0, INVALID_INDEX, &sk);
-    for (i = 0; ERR_OK == crtn && i < 1000 && 0 == (int32_t)ATOMIC_GET(&_g_cfail_closed); i++) {
+    for (i = 0; ERR_OK == crtn && i < 1000 && 0 == (int32_t)ATOMIC_GET(&_g_cfail_conn); i++) {
         MSLEEP(1);
     }
-    MSLEEP(50);// 关两次的话第二次会紧跟着来
+    MSLEEP(50);// 误调关闭回调的话会紧跟着来
     ev_free(&ev);
     // 断言放 ev_free 之后，理由同 test_ev_close_in_acp_conn_deferred
     CuAssertIntEquals(tc, ERR_OK, crtn);
     CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_cfail_conn));
     CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_cfail_injected));
-    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_cfail_closed));
+    CuAssertIntEquals(tc, 0, (int32_t)ATOMIC_GET(&_g_cfail_closed));
 }
 static int32_t _cdel_on_conn(ev_ctx *ev, sock_ctx *sk, int32_t erro, ud_cxt *ud) {
     (void)ev; (void)ud;
@@ -2840,6 +2892,133 @@ static void test_evpub_linger_want(CuTest *tc) {
 #endif
 }
 #endif
+// 对端只连不读用例(明文 / TLS 共用)：服务端 s_cb 报的已发字节数，测试线程读
+static atomic_t _g_slow_sent;
+// 本进程用掉的 CPU 时间(用户态 + 内核态)，毫秒
+static uint64_t _proc_cpu_ms(void) {
+#if defined(OS_WIN)
+    FILETIME ct, et, kt, ut;
+    if (!GetProcessTimes(GetCurrentProcess(), &ct, &et, &kt, &ut)) {
+        return 0;
+    }
+    return ((((uint64_t)kt.dwHighDateTime << 32) | kt.dwLowDateTime)
+            + (((uint64_t)ut.dwHighDateTime << 32) | ut.dwLowDateTime)) / 10000;
+#else
+    struct rusage ru;
+    if (0 != getrusage(RUSAGE_SELF, &ru)) {
+        return 0;
+    }
+    return (uint64_t)(ru.ru_utime.tv_sec + ru.ru_stime.tv_sec) * 1000
+           + (uint64_t)(ru.ru_utime.tv_usec + ru.ru_stime.tv_usec) / 1000;
+#endif
+}
+// 把发送缓冲调小，一口气入队 SLOW_RD_TOTAL 字节
+static void _slow_push(ev_ctx *ev, sock_ctx *sk) {
+    int32_t sndbuf = 16 * 1024;
+    char *blk;
+    (void)setsockopt(sk->fd, SOL_SOCKET, SO_SNDBUF, (char *)&sndbuf, (socklen_t)sizeof(sndbuf));
+    MALLOC(blk, SLOW_RD_CHUNK);
+    memset(blk, 'x', SLOW_RD_CHUNK);
+    for (size_t i = 0; i < SLOW_RD_TOTAL / SLOW_RD_CHUNK; i++) {
+        (void)ev_send(ev, sk, blk, SLOW_RD_CHUNK, 1);
+    }
+    FREE(blk);
+}
+static int32_t _slow_on_acp(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud) {
+    (void)ud;
+    _slow_push(ev, sk);
+    return ERR_OK;
+}
+static void _slow_on_sent(ev_ctx *ev, sock_ctx *sk, int32_t client, size_t size, ud_cxt *ud) {
+    (void)ev; (void)sk; (void)client; (void)ud;
+    ATOMIC_ADD(&_g_slow_sent, (atomic_t)size);
+}
+static void _slow_on_recv(ev_ctx *ev, sock_ctx *sk, int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud) {
+    (void)ev; (void)sk; (void)client; (void)size; (void)ud;
+    buffer_drain(buf, buffer_size(buf));
+}
+// 等服务端写不动(已发字节停涨)，再量 1 秒进程 CPU；*stalled 报服务端是不是真写不动了
+static uint64_t _slow_measure(int32_t *stalled) {
+    atomic_t last = 0, cur;
+    for (int32_t i = 0; i < 100; i++) {// 最多等 2 秒
+        cur = ATOMIC_GET(&_g_slow_sent);
+        if (0 != cur
+            && cur == last) {
+            break;
+        }
+        last = cur;
+        MSLEEP(20);
+    }
+    cur = ATOMIC_GET(&_g_slow_sent);
+    *stalled = cur < SLOW_RD_TOTAL ? 1 : 0;
+    uint64_t t0 = _proc_cpu_ms();
+    MSLEEP(1000);
+    uint64_t cpu = _proc_cpu_ms() - t0;
+    PRINT("slow reader: %u of %u bytes sent when stalled, process cpu %u ms in 1s.",
+          (uint32_t)cur, (uint32_t)SLOW_RD_TOTAL, (uint32_t)cpu);
+    return cpu;
+}
+// 等服务端报的已发字节到齐，最多 2 秒
+static void _slow_wait_sent(void) {
+    uint64_t t0 = nowms();
+    while (ATOMIC_GET(&_g_slow_sent) < SLOW_RD_TOTAL
+           && nowms() - t0 < 2000) {
+        MSLEEP(1);
+    }
+}
+// 对端只连不读：服务端写不动后，1 秒里进程 CPU 要远低于一核。IOCP 曾拿立即完成的 0 字节 WSASend 等可写，
+// 这期间 watcher 空转吃满一核。随后客户端读完，服务端报的已发字节要等于总量(可写后接着发，唤醒不丢)
+static void test_ev_slow_reader(CuTest *tc) {
+    ev_ctx ev;
+    cbs_ctx cbs;
+    netaddr_ctx addr;
+    SOCKET fd = INVALID_SOCK;
+    uint64_t id, cpu = 0;
+    size_t got = 0;
+    int32_t rtn, stalled = 0, rcvbuf = 16 * 1024;
+    ZERO(&cbs, sizeof(cbs));
+    cbs.acp_cb = _slow_on_acp;
+    cbs.s_cb = _slow_on_sent;
+    cbs.r_cb = _slow_on_recv;
+    ATOMIC_SET(&_g_slow_sent, 0);
+    ev_init(&ev, 1, NULL);
+    rtn = ev_listen(&ev, NULL, "127.0.0.1", SLOW_RD_PORT, &cbs, NULL, NULL, 0, &id);
+    if (ERR_OK == rtn
+        && ERR_OK == netaddr_set(&addr, "127.0.0.1", SLOW_RD_PORT)) {
+        fd = sock_create_cloexec(netaddr_family(&addr), SOCK_STREAM, 0, 0);
+    }
+    if (INVALID_SOCK != fd) {
+        // 连接前设才管得到通告窗口
+        (void)setsockopt(fd, SOL_SOCKET, SO_RCVBUF, (char *)&rcvbuf, (socklen_t)sizeof(rcvbuf));
+        if (0 == connect(fd, netaddr_addr(&addr), netaddr_size(&addr))
+            && ERR_OK == sock_nonblock(fd)) {
+            cpu = _slow_measure(&stalled);
+            char buf[65536];
+            uint64_t t0 = nowms();
+            int32_t n;
+            while (got < SLOW_RD_TOTAL
+                   && nowms() - t0 < 10000) {
+                n = (int32_t)recv(fd, buf, (int32_t)sizeof(buf), 0);
+                if (n > 0) {
+                    got += (size_t)n;
+                } else if (0 == n
+                           || !IS_EAGAIN(ERRNO)) {
+                    break;
+                } else {
+                    MSLEEP(1);
+                }
+            }
+            _slow_wait_sent();
+        }
+    }
+    CLOSE_SOCK(fd);
+    ev_free(&ev);
+    CuAssertIntEquals(tc, ERR_OK, rtn);
+    CuAssertIntEquals(tc, 1, stalled);
+    CuAssertTrue(tc, cpu < SLOW_RD_CPU_MAX);
+    CuAssertTrue(tc, SLOW_RD_TOTAL == got);
+    CuAssertTrue(tc, SLOW_RD_TOTAL == ATOMIC_GET(&_g_slow_sent));
+}
 #if WITH_SSL
 // SSL 合并写用例的服务端状态，只在事件线程里读写：已入队的块数与字节数、s_cb 报的已发字节数、正在批量入队
 static size_t _g_mrg_nchunk;
@@ -2981,6 +3160,89 @@ static void test_ev_ssl_merge_send(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, shake);
     CuAssertTrue(tc, SIZE_MAX == bad);
     CuAssertTrue(tc, SSL_MERGE_TOTAL == got);
+}
+static int32_t _slow_on_exchanged(ev_ctx *ev, sock_ctx *sk, int32_t client, ud_cxt *ud, void *ssl) {
+    (void)client;
+    (void)ud;
+    (void)ssl;
+    _slow_push(ev, sk);
+    return ERR_OK;
+}
+// test_ev_slow_reader 的 TLS 版：握手完成就发，客户端同样不读。服务端写不动时挂起应用写并停收，
+// 覆盖 IOCP 在这一档(WPEND_SSL)的等可写
+static void test_ev_ssl_slow_reader(CuTest *tc) {
+    ev_ctx ev;
+    cbs_ctx cbs;
+    netaddr_ctx addr;
+    evssl_ctx *sc = NULL, *cc = NULL;
+    SSL *cli = NULL;
+    SOCKET fd = INVALID_SOCK;
+    uint64_t id, cpu = 0;
+    size_t got = 0;
+    int32_t rtn, shake = ERR_FAILED, stalled = 0, rcvbuf = 16 * 1024;
+    rtn = _ssl_ctxs(&sc, &cc);
+    if (0 == rtn) {
+        PRINT("skip test_ev_ssl_slow_reader, run bin/keys/create.sh first.");
+        return;
+    }
+    CuAssertIntEquals(tc, 1, rtn);
+    ZERO(&cbs, sizeof(cbs));
+    cbs.exch_cb = _slow_on_exchanged;
+    cbs.s_cb = _slow_on_sent;
+    cbs.r_cb = _slow_on_recv;
+    ATOMIC_SET(&_g_slow_sent, 0);
+    ev_init(&ev, 1, NULL);
+    rtn = ev_listen(&ev, sc, "127.0.0.1", SLOW_RD_SSL_PORT, &cbs, NULL, NULL, 0, &id);
+    if (ERR_OK == rtn
+        && ERR_OK == netaddr_set(&addr, "127.0.0.1", SLOW_RD_SSL_PORT)) {
+        fd = sock_create_cloexec(netaddr_family(&addr), SOCK_STREAM, 0, 0);
+    }
+    if (INVALID_SOCK != fd) {
+        // 连接前设才管得到通告窗口
+        (void)setsockopt(fd, SOL_SOCKET, SO_RCVBUF, (char *)&rcvbuf, (socklen_t)sizeof(rcvbuf));
+        if (0 == connect(fd, netaddr_addr(&addr), netaddr_size(&addr))
+            && ERR_OK == sock_nonblock(fd)) {
+            cli = evssl_setfd(cc, fd);
+        }
+    }
+    for (int32_t i = 0; NULL != cli && i < 2000 && ERR_OK != shake; i++) {
+        shake = evssl_tryconn(cli);
+        if (ERR_FAILED == shake) {
+            break;
+        }
+        if (ERR_OK != shake) {
+            MSLEEP(1);
+        }
+    }
+    if (ERR_OK == shake) {
+        cpu = _slow_measure(&stalled);
+        char buf[16384];
+        size_t n;
+        uint64_t t0 = nowms();
+        while (got < SLOW_RD_TOTAL
+               && nowms() - t0 < 10000) {
+            if (ERR_OK != evssl_read(cli, buf, sizeof(buf), &n)) {
+                break;
+            }
+            if (0 == n) {
+                MSLEEP(1);
+                continue;
+            }
+            got += n;
+        }
+        _slow_wait_sent();
+    }
+    // 先收拾再断言(同 _ssl_pair)
+    FREE_SSL(cli);
+    CLOSE_SOCK(fd);
+    ev_free(&ev);
+    evssl_free(sc);
+    evssl_free(cc);
+    CuAssertIntEquals(tc, ERR_OK, shake);
+    CuAssertIntEquals(tc, 1, stalled);
+    CuAssertTrue(tc, cpu < SLOW_RD_CPU_MAX);
+    CuAssertTrue(tc, SLOW_RD_TOTAL == got);
+    CuAssertTrue(tc, SLOW_RD_TOTAL == ATOMIC_GET(&_g_slow_sent));
 }
 // 下面三个 TLS 用例共用：服务端关闭回调次数与带的 close_type(-1 表示还没来)、握手完成次数与那条连接、
 // accept 回调里要不要抢先发一包
@@ -3435,6 +3697,7 @@ void test_event(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_evpub_read_fin);
     SUITE_ADD_TEST(suite, test_evpub_close_type);
     SUITE_ADD_TEST(suite, test_ev_accept_opts);
+    SUITE_ADD_TEST(suite, test_ev_accept_round_cap);
     SUITE_ADD_TEST(suite, test_ev_udp_close_in_recv);
     SUITE_ADD_TEST(suite, test_ev_udp_reuseaddr);
     SUITE_ADD_TEST(suite, test_ev_udp_mcast_opt);
@@ -3473,6 +3736,7 @@ void test_event(CuSuite *suite) {
 #if 0 != MAX_SENDQ_CNT
     SUITE_ADD_TEST(suite, test_ev_sendq_overflow);
 #endif
+    SUITE_ADD_TEST(suite, test_ev_slow_reader);
 #if 0 != CLOSE_LINGER_MS
     SUITE_ADD_TEST(suite, test_ev_linger_late_data);
     SUITE_ADD_TEST(suite, test_ev_linger_timeout);
@@ -3488,6 +3752,7 @@ void test_event(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_evssl_host);
     SUITE_ADD_TEST(suite, test_ssl_write_wants_read);
     SUITE_ADD_TEST(suite, test_ev_ssl_merge_send);
+    SUITE_ADD_TEST(suite, test_ev_ssl_slow_reader);
     SUITE_ADD_TEST(suite, test_ev_ssl_close_type);
     SUITE_ADD_TEST(suite, test_ev_ssl_keyupdate_short);
     SUITE_ADD_TEST(suite, test_ev_ssl_upgrade_residue);

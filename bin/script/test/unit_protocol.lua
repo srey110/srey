@@ -188,8 +188,11 @@ local function _ref_unpack(pk)
     while pk do
         parent = mark[#mark]
         val, kind, nelem, pk = rnode(pk)
-        -- 错误节点：当值写成 { err = 文本 }，当 map 键就是文本本身
+        -- 错误节点：顶层（attr 之后的数据）同单节点；当值写成 { err = 文本 }，当 map 键就是文本本身
         if "error" == kind then
+            if not parent then
+                return false, val
+            end
             kind = nil
             if not (parent and parent.ismap and 0 == parent.status) then
                 val = { err = val }
@@ -816,7 +819,8 @@ runner.run(function(t)
             { "!4\r\nboom\r\n", false, "单节点批量错误", "boom" },
             { "*2\r\n-ERR x\r\n:1\r\n", { { err = "ERR x" }, 1 }, "数组里的错误元素写成 err 表" },
             { "%1\r\n-ERR k\r\n-ERR v\r\n", { ["ERR k"] = { err = "ERR v" } }, "map 的错误键是文本、错误值写成 err 表" },
-            { "|1\r\n+a\r\n+b\r\n-ERR x\r\n", { { a = "b" }, { err = "ERR x" } }, "顶层多值里的错误元素" },
+            -- 第 5 项：attr 开头，value / node 看的是首个 attr，不校验那两条
+            { "|1\r\n+a\r\n+b\r\n-ERR x\r\n", false, "attr 之后的错误应答同单节点", "ERR x", true },
             { "$-1\r\n", nil, "单节点 null bulk" },
             { "_\r\n", nil, "单节点 RESP3 nil" },
             { ",2\r\n", 2.0, "单节点浮点保持 float" },
@@ -889,8 +893,10 @@ runner.run(function(t)
                     t:eq(got[i].r, got[i].c, "redis.unpack 与参照一致：" .. f[3])
                     if f[4] then
                         t:eq(f[4], got[i].e, "unpack 第二返回值是错误文本：" .. f[3])
-                        t:eq(f[4], got[i].ve, "value 第二返回值是错误文本：" .. f[3])
-                        t:eq("error", got[i].k, "node 的 kind 是 error：" .. f[3])
+                        if not f[5] then
+                            t:eq(f[4], got[i].ve, "value 第二返回值是错误文本：" .. f[3])
+                            t:eq("error", got[i].k, "node 的 kind 是 error：" .. f[3])
+                        end
                     end
                 end
             end

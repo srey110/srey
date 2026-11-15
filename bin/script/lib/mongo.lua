@@ -24,19 +24,19 @@ ctx.FLAGS = {
     EXHAUSTALLOWED = 1 << 16,
 }
 
--- 拿到锁后、发送前复查(同 C 侧 _mongo_lock)：组包之后连接换过，包里带的是已作废事务的上下文，
--- 发到新连接上会被收进那个事务。命中即放掉包、按组包失败处理。mark 为 nil 是包不带事务上下文，不查
+-- 拿到锁后、发送前复查(同 C 侧 _mongo_lock)：组包之后连接换过、或那个事务已收尾，包里带的是失效事务的上下文
+-- (判据见 C 层 mongo_txn_moved)。命中即放掉包、按组包失败处理。mark 为 nil 是包不带事务上下文，不查
 ---@param mgo any C 层 mongo 句柄
 ---@param pack lightuserdata 已组好的包，命中时由本函数释放
 ---@param mark integer? 组包前的 mgo:txn_mark()
----@return boolean moved 连接已换过、包已释放时 true
+---@return boolean moved 组包时那个事务已失效、包已释放时 true
 local function _txn_moved(mgo, pack, mark)
     if nil == mark
         or not mgo:txn_moved(mark) then
         return false
     end
     utils.ud_free(pack)
-    WARN("mongo transaction invalidated by reconnect, rollback or begin again.")
+    WARN("mongo transaction ended or invalidated by reconnect while queued, command not sent.")
     return true
 end
 -- 连接标识 sk 必须在锁内才读（等应答那支由 _send_wait 现取）:排队期间前一个协程可能已经 ping 重连、换掉了它,
@@ -149,6 +149,7 @@ end
 ---一条连接同时只允许一个活跃事务，该连接上已有别的 session 在事务中时返回 false。
 ---事务进行中连接重连过即作废：之后带事务上下文的命令一律失败，commit/rollback 都发 abortTransaction
 ---让服务端当场中止、放锁（commit 返回 false；提交已交出过的 commit 除外，照常重发，见 commit）；要继续须重新 begin（同 C 侧 mongo_begin）
+---组包后排队期间事务已收尾（commit / rollback / close，或收尾后又 begin）的命令也不发、按失败返回（同 C 侧 mongo_begin）
 ---事务里把会话丢掉不收尾（没 commit / rollback / close）的话，服务端事务要到 transactionLifetimeLimitSeconds（默认 60 秒）才中止，期间持锁
 ---@return boolean ok 成功 true（该连接上已有别的 session 处于事务中时返回 false）
 function sess_ctx:begin()
@@ -412,7 +413,7 @@ end
 
 ---插入文档
 ---@param col string 集合名
----@param docs lightuserdata BSON 数组格式的文档列表指针
+---@param docs lightuserdata BSON 数组格式的文档列表指针；元素须都是文档，有不是的整条命令不发、返回 false
 ---@param dlens integer docs 字节数
 ---@param opts string|lightuserdata|nil 附加 BSON 选项
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
@@ -426,7 +427,7 @@ end
 
 ---更新文档
 ---@param col string 集合名
----@param updates lightuserdata BSON 数组格式的更新列表指针
+---@param updates lightuserdata BSON 数组格式的更新列表指针；元素要求同 insert 的 docs
 ---@param ulens integer updates 字节数
 ---@param opts string|lightuserdata|nil 附加 BSON 选项
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
@@ -440,7 +441,7 @@ end
 
 ---删除文档
 ---@param col string 集合名
----@param deletes lightuserdata BSON 数组格式的删除列表指针
+---@param deletes lightuserdata BSON 数组格式的删除列表指针；元素要求同 insert 的 docs
 ---@param dlens integer deletes 字节数
 ---@param opts string|lightuserdata|nil 附加 BSON 选项
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
@@ -463,10 +464,10 @@ function ctx:drop(col, opts, optslens)
 end
 
 ---批量写操作（bulkWrite，MongoDB 8.0+）。全库唯一不收 col 的集合类命令：
----bulkWrite 是集群级命令，目标集合逐条写在 nsinfo 里，不走连接级集合名
----@param ops lightuserdata BSON 数组格式操作列表指针
+---bulkWrite 是集群级命令，目标集合逐条写在 nsinfo 里，不走连接级集合名；恒发往 admin 库(服务端只认 admin)，不用切库
+---@param ops lightuserdata BSON 数组格式操作列表指针；元素要求同 insert 的 docs
 ---@param opsz integer ops 字节数
----@param nsinfo lightuserdata BSON 数组格式命名空间信息指针
+---@param nsinfo lightuserdata BSON 数组格式命名空间信息指针；元素要求同 ops
 ---@param nsz integer nsinfo 字节数
 ---@param opts string|lightuserdata|nil 附加 BSON 选项
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
@@ -531,7 +532,7 @@ end
 ---@param col string 集合名
 ---@param pipeline lightuserdata BSON 数组格式聚合管道指针
 ---@param pllens integer pipeline 字节数
----@param opts string|lightuserdata|nil 附加 BSON 选项
+---@param opts string|lightuserdata|nil 附加 BSON 选项；可带 cursor（如 {batchSize = N} 定首批条数），不带时自动补空的 cursor
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
 ---@return lightuserdata|nil mgopack 响应包指针，仅在本协程下次 yield 前有效，
 ---需保留请自行拷贝；组包被拒或网络失败返回 nil，服务端报错（ok:0）照样返回应答包，须自行判 ok
@@ -639,7 +640,13 @@ function ctx:startsession()
     return sess_ctx.new(self, session_ud)
 end
 
----连接池归还时调：连接上还绑着事务（借用者没 commit / rollback）就回滚，不让下一个人的写命令组进这个事务。
+---连接池归还时调（连接断没断都调，不挂起）：清掉连接级 flags（set_flag 置的 MORETOCOME），
+---留着的话下一个借用者的写会静默变成只发不等（同 C 侧 mongo_pool_ops）。db() 换的库池不管，借用者要在归还前自己还原
+function ctx:reset_local()
+    self.mongo:clear_flag()
+end
+
+---连接池归还连着的连接时调：连接上还绑着事务（借用者没 commit / rollback）就回滚，不让下一个人的写命令组进这个事务。
 ---没等到应答也在本地解绑再返回 false，由连接池断开（同 C 侧 mongo_pool_ops）。会话已被业务丢掉时只能本地解绑，见 sess_ctx:begin
 ---@return boolean ok 本来就没绑事务或已解绑 true；false 时连接池会断开这条连接
 function ctx:reset_session()

@@ -486,7 +486,7 @@ static void _uev_loop_event(void *arg) {
             if (BIT_CHECK(ev, EVENT_ERROR)) {
                 // 注册失败的 fd 已无 knote,再等事件就永不关闭,故置位后本轮同步派发读写,
                 // 由入口的 STATUS_ERROR 分支就地 close；pipe / listen(type 为 0)不能走
-                // _uev_disconnect(它对非 SOCK_STREAM 一律 UPCAST 成 udp_ctx 会越界),只记日志
+                // _uev_disconnect(它对非 SOCK_STREAM 一律 UPCAST 成 udp_ctx 会越界)：pipe 只记日志，listen 退出监听
                 if (SOCK_STREAM == evsk->type
                     || SOCK_DGRAM == evsk->type) {
                     _uev_disconnect_failed(watcher, evsk);
@@ -496,6 +496,13 @@ static void _uev_loop_event(void *arg) {
                 } else {
                     LOG_ERROR("watcher %d listener fd %d lost its knote, no longer accepts.",
                               watcher->index, (int32_t)evsk->sk.fd);
+                    // 先把已排着的连接全接走(evdata 置负，不受每轮上限)，再退出监听；接的过程中重挂失败已关过的(ev_cb 已清)不再关
+                    watcher->evdata = -1;
+                    evsk->ev_cb(watcher, evsk, (EVENT_READ | EVENT_WRITE));
+                    if (NULL != evsk->ev_cb) {
+                        _uev_lsn_lost(watcher, evsk);
+                    }
+                    continue;
                 }
                 watcher->evdata = 0;
                 evsk->ev_cb(watcher, evsk, (EVENT_READ | EVENT_WRITE));

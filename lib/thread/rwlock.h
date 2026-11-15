@@ -91,7 +91,7 @@ static inline int32_t rwlock_trywrlock(rwlock_ctx *ctx) {
 /// <param name="ctx">rwlock_ctx</param>
 static inline void rwlock_unlock(rwlock_ctx *ctx) {
 #if defined(OS_WIN)
-    // wlock 只在持写锁的线程里读写，不用原子
+    // wlock 只在持锁期间读写(只有持写锁时会写)，SRW 加解锁保证可见，不用原子
     if (0 != ctx->wlock) {
         ctx->wlock = 0;
         ReleaseSRWLockExclusive(&ctx->rwlock);

@@ -58,16 +58,19 @@ typedef void(*_net_recv_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint
 typedef void(*_net_send_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, size_t size);// 数据发送完成回调
 typedef void(*_net_connect_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, int32_t erro);// 连接建立回调
 typedef void(*_net_ssl_exchanged_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client);// SSL 交换完成回调
+// 应用层握手完成回调。sess 是这条消息的会话：kcp 建会话结果是该会话 kcp_start 给的 sess，
+// 其余是连接的会话键(没设为 0)
 typedef void(*_net_handshake_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client,
-                                 int32_t erro, void *data, size_t lens);// 应用层握手完成回调
+                                 int32_t erro, void *data, size_t lens, uint64_t sess);
 // 连接关闭回调。sess 是这条 CLOSE 的会话：连接本身关闭时等于 sk->skid，kcp 会话关闭时是该会话 kcp_start 给的 sess
 typedef void(*_net_close_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro, uint64_t sess);
 // 连接关闭观察者，见 task_watch_closed；前六个参数同 _net_close_cb
 typedef void(*_net_close_watch_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro,
                                    uint64_t sess, void *arg);
-// UDP 数据接收回调。源地址原样给出，只在回调内有效：回包直接交给 ev_sendto_addr，要字符串用 netaddr_ip / netaddr_port
+// UDP 数据接收回调。源地址原样给出，只在回调内有效：回包直接交给 ev_sendto_addr，要字符串用 netaddr_ip / netaddr_port。
+// sess 是这条消息的会话：kcp 会话的数据是该会话 kcp_start 给的 sess，同一 socket 上多个会话、stop 后重启都靠它分；普通 UDP 是 socket 的会话键(没设为 0)
 typedef void(*_net_recvfrom_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, const netaddr_ctx *addr,
-                                void *data, size_t size);
+                                void *data, size_t size, uint64_t sess);
 // task_watch_closed 登记的一项
 typedef struct close_watch {
     _net_close_watch_cb cb;

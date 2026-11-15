@@ -51,7 +51,7 @@ static inline void _pgpack_set_string_n(binary_ctx *bwriter, const char *str, si
     binary_set_int8(bwriter, 0);
 }
 void *pgsql_pack_startup(const char *user, const char *database, int32_t minor, size_t *size) {
-    // StartupMessage 无类型码：Int32(总长) Int16(主版本 3) Int16(次版本 0) 若干 String 键值对，一个 NUL 收尾
+    // StartupMessage 无类型码：Int32(总长) Int16(主版本 3) Int16(次版本，取自 minor) 若干 String 键值对，一个 NUL 收尾
     static const char *const _params[] = {
         "client_encoding", "UTF8",
         "DateStyle", "ISO",

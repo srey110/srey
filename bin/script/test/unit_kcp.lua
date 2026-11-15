@@ -135,19 +135,23 @@ runner.run(function(t)
         ck:stop()
         t:eq(true, ck:start("127.0.0.1", SV_PORT), "config 不传仍走库默认")
         ck:stop()
+        -- 对端与 socket 不同族(IPv4 socket 连 ::1)：C 层当场拒，不建出收发全失败的会话
+        t:eq(false, ck:start("::1", SV_PORT), "对端与 socket 不同族被拒")
     end
 
     -- server 收到数据原样 echo(异步走回调);client send 的响应由框架按 sess 唤醒协程,不进此回调。
-    -- 回调拿不到 conv,ASYNC_MSG 按内容交给末尾那个 async 会话回
+    -- ASYNC_MSG 按内容交给末尾那个 async 会话回,顺带记下回调交出的 sess,断言它就是那个会话的 k.sess
     local async_kcp
+    local async_got_sess
     local learn_kcp
     local learn_hits = 0
-    srey.on_recvedfrom(function(pktype, sk, addr, data, size)
+    srey.on_recvedfrom(function(pktype, sk, addr, data, size, sess)
         if sk.fd == sv_sk.fd then
             if learn_kcp and #LEARN_MSG == size and LEARN_MSG == srey.ud_str(data, size) then
                 learn_hits = learn_hits + 1
                 learn_kcp:send(data, size, 1)
             elseif async_kcp and #ASYNC_MSG == size and ASYNC_MSG == srey.ud_str(data, size) then
+                async_got_sess = sess
                 async_kcp:send(data, size, 1)
             else
                 sv_kcp:send(data, size, 1)
@@ -257,6 +261,11 @@ runner.run(function(t)
     -- async 重复 start 只报本地发起结果,恒为 true;隐式 stop 要靠回显看:第一次指向无人的 NOBODY_PORT,
     -- 第二次指向 client。没有隐式 stop 的话第二次因 conv 冲突被 event 线程拒掉,留下的旧会话按源地址
     -- 丢掉 client 的包,下面的 send 等满超时
+    -- 异步建会话的结果走 on_handshaked，第 7 参是该会话的 sess，按它认是哪个会话
+    local hs_erro = {}
+    srey.on_handshaked(function(_, _, _, erro, _, _, sess)
+        hs_erro[sess] = erro
+    end)
     async_kcp = kcp.new(sv_sk, CONV + 1)
     t:eq(true, async_kcp:start("127.0.0.1", NOBODY_PORT), "async 模式 start")
     local first_sess = async_kcp.sess
@@ -267,6 +276,8 @@ runner.run(function(t)
     t:eq(true, cli_async:start("127.0.0.1", SV_PORT), "client 侧 CONV+1 start")
     local adata, asize = cli_async:send(ASYNC_MSG, #ASYNC_MSG, 1)
     t:eq(ASYNC_MSG, adata and srey.ud_str(adata, asize), "重复 start 后回显来自新会话(旧会话已被隐式 stop)")
+    t:eq(async_kcp.sess, async_got_sess, "on_recvedfrom 第 6 参等于收到数据的那个会话的 k.sess")
+    t:eq(0, hs_erro[async_kcp.sess], "on_handshaked 第 7 参等于建成的那个会话的 k.sess，erro 为 ERR_OK(0)")
     t:eq(CLOSE_TYPE.LOCAL, wait_closed(first_sess), "隐式 stop 的旧会话:on_closed 第 5 参是旧 sess")
     cli_async:stop()
     async_kcp:stop()

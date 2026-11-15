@@ -39,8 +39,8 @@ void *mysql_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
 int32_t mysql_more(mpack_ctx *mpack);
 /// <summary>
 /// MySQL 参数初始化。不配 evssl 时，caching_sha2_password 账号遇到服务端缓存未命中(如服务端重启后首连)
-/// 须做完整认证，而明文连接上本实现不做 RSA 公钥交换(公钥无从核实，中间人换掉它就能拿到明文口令)，
-/// 认证失败并打 ERROR 日志。出路：配 SSL、先经 SSL 登录一次让服务端缓存口令，或换 mysql_native_password 账号(MySQL 8.4 默认关、9.0 已移除该插件)。
+/// 须做完整认证，要用服务端 RSA 公钥加密口令：经 mysql_set_pubkey 设本地公钥，或经 mysql_set_pubkey_request
+/// 允许向服务端要；都没有则认证失败并打 ERROR 日志。也可以配 SSL，或换 mysql_native_password 账号(MySQL 8.4 默认关、9.0 已移除该插件)。
 /// 服务端默认认证插件不是 caching_sha2_password / mysql_native_password 时按 caching_sha2_password 作答，
 /// 由服务端 AuthSwitch 到账号所用插件，切换目标仍不是这两种则认证失败
 /// </summary>
@@ -60,7 +60,8 @@ int32_t mysql_init(mysql_ctx *mysql, const char *ip, uint16_t port, struct evssl
     const char *user, const char *password, const char *database, const char *charset, uint32_t maxpk);
 /// <summary>
 /// 设置服务端 RSA 公钥（PEM），同官方客户端 --server-public-key-path。明文连接上 caching_sha2_password 要完整认证时
-/// 用它加密口令，设了它就不向服务端要公钥；TLS 连接上用不到。下次认证生效，须在发起连接之前设
+/// 用它加密口令，设了它就不向服务端要公钥；TLS 连接上用不到。下次认证生效，须在发起连接之前设；
+/// 连上之后再改，须确知本连接上没有命令或重连在途(重连的认证在网络线程上读它)
 /// </summary>
 /// <param name="mysql">mysql_ctx</param>
 /// <param name="pem">公钥 PEM，按 lens 拷进 mysql；NULL 或 lens 为 0 表示清掉已设的公钥</param>
@@ -69,7 +70,8 @@ int32_t mysql_init(mysql_ctx *mysql, const char *ip, uint16_t port, struct evssl
 int32_t mysql_set_pubkey(mysql_ctx *mysql, const char *pem, size_t lens);
 /// <summary>
 /// 允许明文连接上向服务端要 RSA 公钥（默认不允许），同官方客户端 --get-server-public-key。
-/// 要来的公钥无从核实，中间人换掉它就能拿到口令，只在可信网络里开；设了本地公钥时以本地为准。须在发起连接之前设
+/// 要来的公钥无从核实，中间人换掉它就能拿到口令，只在可信网络里开；设了本地公钥时以本地为准。
+/// 须在发起连接之前设，连上之后再改的要求同 mysql_set_pubkey
 /// </summary>
 /// <param name="mysql">mysql_ctx</param>
 /// <param name="on">非 0 允许，0 不允许</param>
@@ -81,7 +83,7 @@ int32_t mysql_set_pubkey_request(mysql_ctx *mysql, int32_t on);
 /// <param name="mysql">mysql_ctx</param>
 /// <returns>服务器版本字符串</returns>
 const char *mysql_version(mysql_ctx *mysql);
-// 连接级的错误、自增 ID、影响行数(mysql_erro / mysql_last_id / mysql_affected_rows)只由 mysql_record 写：
+// 连接级的错误、自增 ID、影响行数(mysql_erro / mysql_last_id / mysql_affected_rows)与重连用的当前库名只由 mysql_record 写：
 // 网络线程解析时只把它们记进各自的 mpack，持该连接串行化执行权、收应答的一方再经 mysql_record 落到连接上
 // (coro_utils 的命令接口收到应答即记，在交给结果回调之前)。多协程共用一条连接时，须在命令返回后、
 // 本协程下次挂起之前读，让出之后别的协程可能已在同一连接上把它们改掉。握手阶段的 ERR 由建连方经 mysql_record_handshake 记
@@ -116,6 +118,7 @@ uint64_t mysql_last_id(mysql_ctx *mysql);
 uint64_t mysql_affected_rows(mysql_ctx *mysql);
 /// <summary>
 /// 把 OK 包的影响行数与自增 ID、或 ERR 包的错误记到连接上；其余类型的包不改它们。
+/// 应答换了当前库（COM_INIT_DB 的 OK、USE 等经 session track 回带）时，新库名也由这里写进连接，之后重连用它。
 /// 只在持该连接串行化执行权、收到该包的那一方调用，网络线程不调
 /// </summary>
 /// <param name="mysql">mysql_ctx，须是收到 mpack 的那条连接</param>

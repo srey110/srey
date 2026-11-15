@@ -662,7 +662,7 @@ LUAMOD_API int luaopen_mysql_stmt(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 打包 COM_INIT_DB（切换数据库）命令
+/// 打包 COM_INIT_DB（切换数据库）命令。收到 OK 后须 record 才记进连接的库名(重连握手用它)
 /// </summary>
 /// <param name="self" type="userdata">mysql 对象</param>
 /// <param name="db" type="string">数据库名</param>
@@ -764,7 +764,8 @@ static int32_t _lmysql_pack_stmt_prepare(lua_State *lua) {
 /// <param name="evssl" type="lightuserdata|nil">SSL 上下文；nil 表示明文</param>
 /// <param name="user" type="string">用户名，最长 128 字节</param>
 /// <param name="password" type="string">密码，最长 256 字节。caching_sha2_password 账号在明文连接上遇到服务端缓存未命中(如服务端重启后首连)
-/// 认证失败：本实现明文下不做 RSA 公钥交换。出路：配 SSL、先经 SSL 登录一次让服务端缓存口令，或换 mysql_native_password 账号(MySQL 8.4 默认关、9.0 已移除该插件)</param>
+/// 要做完整认证，须有服务端 RSA 公钥：经 set_pubkey 设本地公钥，或经 set_pubkey_request 允许向服务端要；都没有则认证失败。
+/// 也可以配 SSL，或换 mysql_native_password 账号(MySQL 8.4 默认关、9.0 已移除该插件)</param>
 /// <param name="database" type="string">初始数据库，最长 256 字节</param>
 /// <param name="charset" type="string">字符集（如 "utf8mb4"）</param>
 /// <param name="maxpk" type="integer?">最大包大小（字节）；省略或非数字时使用默认</param>
@@ -942,6 +943,7 @@ static int32_t _lmysql_affected_rows(lua_State *lua) {
 }
 /// <summary>
 /// 把 OK 包的影响行数与自增 id、或 ERR 包的错误记到本连接上，供 last_id / affected_rows / erro 读；其余类型的包不改它们。
+/// 应答换了当前库（selectdb 的 OK、USE 等经 session track 回带）时，新库名也由这里写进连接，之后重连用它。
 /// 只在持本连接串行化执行权、刚收到该包的协程里调
 /// </summary>
 /// <param name="self" type="userdata">mysql 对象</param>

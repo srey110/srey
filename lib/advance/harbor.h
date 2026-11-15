@@ -18,7 +18,8 @@
 /// (含未编进 SSL)、注册失败，或监听失败(此时已注册的 task 已被关闭)</returns>
 int32_t harbor_start(loader_ctx *loader, const char *tname, const char *ssl, const char *ip, uint16_t port);
 /// <summary>
-/// 服务器间通信请求包
+/// 服务器间通信请求包。请求与响应的负载都受 HTTP_MAX_CONTENT_LENS 管：请求超了对端断连，
+/// 响应超了本端收包时断连，两种都只能看到连接断开；响应超限时目标已经执行过
 /// </summary>
 /// <param name="task">目标任务名</param>
 /// <param name="call">1 执行call 0 执行request</param>

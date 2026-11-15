@@ -107,21 +107,15 @@ runner.run(function(t)
         local cs = srey.serial()
         local in_cs = 0 -- 同时在 cs 内的协程数
         local peak  = 0
-        srey.fork(function()
+        local function _hold()
             cs(function()
                 in_cs = in_cs + 1; if in_cs > peak then peak = in_cs end
                 srey.sleep(20)
                 in_cs = in_cs - 1
             end)
-        end)
-        srey.fork(function()
-            cs(function()
-                in_cs = in_cs + 1; if in_cs > peak then peak = in_cs end
-                srey.sleep(20)
-                in_cs = in_cs - 1
-            end)
-        end)
-        srey.sleep(60)
+        end
+        -- 等两个都跑完再断言：第二段 sleep 要等第一段派发完才挂，固定时长的 sleep 在机器忙时等不够
+        srey.fork_wait({ _hold, _hold })
         t:eq(1, peak, "互斥：任意时刻最多 1 个协程在 cs 内")
         t:eq(0, in_cs, "两协程均已退出 cs")
     end
@@ -142,7 +136,11 @@ runner.run(function(t)
             cs(function() srey.sleep(20) end) -- B 排队 → A.release 唤醒 → B cs 内 yield
             b_done = true
         end)
-        srey.sleep(80)
+        -- 有界轮询等两个都跑完：B05 回归时 A 永远醒不来，fork_wait 没有超时会挂满 srey -d 的总超时
+        for _ = 1, 50 do
+            if a_done and b_done then break end
+            srey.sleep(20)
+        end
         t:eq(true, a_done, "A 在 cs 出口后的 srey.sleep 正常完成（coro_running 已还原）")
         t:eq(true, b_done, "B 正常完成")
     end

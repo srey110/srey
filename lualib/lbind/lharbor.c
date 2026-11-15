@@ -1,7 +1,7 @@
 ﻿#include "lbind/lpub.h"
 
 /// <summary>
-/// 打包 harbor 跨节点消息
+/// 打包 harbor 跨节点消息。负载上限同 C 层 harbor_pack
 /// </summary>
 /// <param name="task" type="integer">目标 task name</param>
 /// <param name="call" type="integer">调用类型：非0=call（单向），0=request（双向）</param>

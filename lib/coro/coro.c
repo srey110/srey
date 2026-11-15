@@ -388,6 +388,15 @@ int32_t coro_wake(coro_ctx *co, uint64_t sess, int32_t tag, void *payload) {
     _coro_mco_resume(co, _coro_take_mco(co, coinfo), payload);
     return ERR_OK;
 }
+int32_t coro_waiting(coro_ctx *co, uint64_t sess, int32_t tag) {
+    coro_sess key;
+    key.sess = sess;
+    coro_sess *cofind = coro_map_get_with_hash(co->mapco, &key, _CORO_SESS_HASH_OF(sess));
+    if (NULL == cofind || list_empty(&cofind->waiters)) {
+        return 0;
+    }
+    return (tag == UPCAST(cofind->waiters.head, coro_info, node)->tag) ? 1 : 0;
+}
 // 进入时探测一次 mapco，把该 sess 下全部挂起等待者转移到本地链表再消费：
 // resume 期间在同一 sess 上重新注册的等待不会被本轮看到，而是追加回同一个条目
 void coro_wake_all(coro_ctx *co, uint64_t sess, void *payload, void *spawn) {

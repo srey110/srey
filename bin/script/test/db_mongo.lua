@@ -245,7 +245,7 @@ runner.run(function(t)
         t:check(mg:insert(MCOL, m1ptr, m1sz), "moved: 事务内首条 insert ok")
         local oldskid = mg.mongo:sock_id().skid
         local mk = mg.mongo:txn_mark()
-        t:eq(oldskid, mk, "moved: 绑着事务时 txn_mark 记下当前 skid")
+        t:check(-1 ~= mk, "moved: 绑着事务时 txn_mark 不是\"没绑事务\"(C 层 UINT64_MAX，到 Lua 是 -1)")
         t:eq(false, mg.mongo:txn_moved(mk), "moved: 没重连时 txn_moved 为 false")
         local mdoc2 = bson.encode({ { id = 601, name = "moved-queued" } })
         local m2ptr, m2sz = mdoc2:data()
@@ -268,6 +268,32 @@ runner.run(function(t)
         t:check(sess.session:stale(), "moved: 事务已作废")
         sess:rollback()-- 结果不判，同 C 侧：服务端还留着旧事务时这一下把它中止、放锁
         t:eq(0, mg:count(MCOL, eptr, esz), "moved: 两条都不可见")
+
+        -- 收尾排在前、事务首条写排在后(同 C 侧 _txn_queued_end_flow 第 1 段)：先起的占锁睡一会儿，
+        -- rollback 排上队时事务还是空的，首条写组好包排在它后面。rollback 先跑，首条写拿到锁时事务已收尾，
+        -- 不能再带着 startTransaction 发出去(会在服务端开出没人收尾的事务)，返回 false
+        local QCOL = "srey_test_qend_lua"
+        mg:drop(QCOL)-- 集合本就可能不存在，返回值不判
+        t:check(sess:begin(), "qend: txn begin")
+        local qdoc = bson.encode({ { id = 800, name = "queued-behind-rollback" } })
+        local qptr, qsz = qdoc:data()
+        local qres = srey.fork_wait({
+            function()
+                return srey.serial_ret(false, mg.serial(function()
+                    srey.sleep(50)
+                    return true
+                end))
+            end,
+            function()
+                return sess:rollback()-- 结果不判：服务端没见过这个事务，回 NoSuchTransaction
+            end,
+            function()
+                return (mg:insert(QCOL, qptr, qsz))
+            end,
+        })
+        t:check(qres[3].ok and false == qres[3].val, "qend: 排在 rollback 后面的首条事务写不发、返回 false")
+        t:eq(0, mg:count(QCOL, eptr, esz), "qend: 不可见")
+        mg:drop(QCOL)-- 收尾删掉，不留残留集合
 
         -- 空事务(同 C 侧 _txn_empty_flow)：begin 后一条命令都没发就收尾，不发包、本地解绑并返回 true；
         -- 真发出去服务端不认识这个 txnNumber，必回失败。重连作废后的空事务 commit 同样本地收尾
@@ -405,6 +431,19 @@ runner.run(function(t)
     local ar = _resp(mg:aggregate(CCOL, plptr, plsz))
     local ab = ar and ar.cursor and ar.cursor.firstBatch
     t:eq(2, ab and ab[1] and ab[1].n, "aggregate $match + $count")
+    -- opts 自带 cursor 定首批条数：不再补空的 cursor(同名字段出现两次服务端拒收)，3 条只回 1 条
+    local pl2 = bson.encode({ { ["$match"] = { v = { ["$gte"] = 1 } } } })
+    local pl2ptr, pl2sz = pl2:data()
+    local copt = bson.encode({ cursor = { batchSize = 1 } })
+    local ar2 = _resp(mg:aggregate(CCOL, pl2ptr, pl2sz, copt:data()))
+    local ab2 = ar2 and ar2.cursor and ar2.cursor.firstBatch
+    t:check(ar2 and 1 == ar2.ok and ab2 and 1 == #ab2, "aggregate opts 带 cursor.batchSize=1 首批 1 条: " .. tostring(ar2 and ar2.errmsg))
+    local cw2 = ar2 and ar2.cursor and ar2.cursor.id
+    if cw2 and 0 ~= cw2:val() then-- 还剩 2 条、游标开着：关掉，免得留到服务端空闲超时
+        local kc2 = bson.encode({ cw2 })
+        local kc2ptr, kc2sz = kc2:data()
+        mg:killcursors(CCOL, kc2ptr, kc2sz)
+    end
     -- distinct
     local dr = _resp(mg:distinct(CCOL, "grp"))
     local dv = dr and dr.values or {}
@@ -445,7 +484,8 @@ runner.run(function(t)
     local dx = bson.encode({ "srey_grp_idx" })
     local dxptr, dxsz = dx:data()
     t:check(mg:dropindexes(CCOL, dxptr, dxsz), "dropindexes ok")
-    -- bulkwrite（MongoDB 8.0+，须在 admin 库上发）。op 文档靠首字段名区分种类，Lua 表键序不定，用构建器保序
+    -- bulkwrite（MongoDB 8.0+）：服务端只认 admin 库，组包恒写 admin，连接停在 test 库上直接发、不用切库。
+    -- op 文档靠首字段名区分种类，Lua 表键序不定，用构建器保序
     local ob = bson.new()
     ob:doc_begin("0")
     ob:int32("insert", 0)
@@ -458,9 +498,7 @@ runner.run(function(t)
     local obptr, obsz = ob:data()
     local ns = bson.encode({ { ns = "test." .. CCOL } })
     local nsptr, nssz = ns:data()
-    mg:db("admin")
     local br = _resp(mg:bulkwrite(obptr, obsz, nsptr, nssz))
-    mg:db("test")
     -- 7.0 以前回 59(CommandNotFound)；7.x 命令在但关在 feature flag 后面，回 115(CommandNotSupported)
     if br and (59 == br.code or 115 == br.code) then
         printd("[%s] bulkWrite needs MongoDB 8.0+, case skipped (code %d)", t.name, br.code)

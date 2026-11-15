@@ -122,6 +122,14 @@ void *coro_wait(coro_ctx *co, uint64_t sess, int32_t tag, int32_t keep, uint32_t
 /// <returns>ERR_OK 唤醒了一个；ERR_FAILED 没有匹配的等待者(要不要另起协程由调用方定)</returns>
 int32_t coro_wake(coro_ctx *co, uint64_t sess, int32_t tag, void *payload);
 /// <summary>
+/// 只看不摘：sess 上排在队头的等待者是不是在等 tag
+/// </summary>
+/// <param name="co">调度器</param>
+/// <param name="sess">会话 ID</param>
+/// <param name="tag">等待标签</param>
+/// <returns>是返回 1；没有条目、队列空或队头标签不同返回 0</returns>
+int32_t coro_waiting(coro_ctx *co, uint64_t sess, int32_t tag);
+/// <summary>
 /// 广播(连接关闭、资源池关闭或整体失败时叫醒全部等待者)：条目的 keep 先清零(不可逆)，再按顺序唤醒 sess 上全部等待者(不看标签)，
 /// spawn 非 NULL 时随后起一个协程跑它，最后重新查一次条目，空了才删。
 /// 起协程必须排在重新查询之前：它在同一 sess 上挂起时要追加进这个 keep 已清零的条目

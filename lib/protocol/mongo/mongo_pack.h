@@ -3,7 +3,7 @@
 
 #include "protocol/mongo/mongo_struct.h"
 
-#define MONGO_TXN_NONE UINT64_MAX // mongo_txn_mark 的"没绑事务"；skid 来自 createid，最高位恒 0，撞不上
+#define MONGO_TXN_NONE UINT64_MAX // mongo_txn_mark 的"没绑事务"；bindid 来自 createid，最高位恒 0，撞不上
 //https://www.mongodb.com/zh-cn/docs/manual/reference/command/
 // 包头 flags：drop insert update delete bulkWrite killCursors createIndexes dropIndexes 照抄连接级
 // flags（MORETOCOME 可用）；endSessions 恒带 MORETOCOME；其余命令都要等回包，恒不带。
@@ -13,8 +13,9 @@
 // 例外是 abortTransaction（照发，让服务端当场中止放锁）与提交已交出过的 commitTransaction（可重发，
 // 见 mongo_session_stale）。
 // 组包失败一律返回 NULL 并置 *size 为 0，情形有：大入参超 INT32_MAX、必填数组为空或不是完整 BSON、
-// options / filter 等外部文档结构不合法、事务已作废（见上）、拼完的总长超 INT32_MAX。
-// 组包在锁外、发送在拿到锁之后，中间可能重连：带事务上下文的包发送前须经 mongo_txn_moved 复查
+// insert / update / delete / bulkWrite 的数组元素有不是文档的、options / filter 等外部文档结构不合法、
+// 事务已作废（见上）、拼完的总长超 INT32_MAX。
+// 组包在锁外、发送在拿到锁之后，中间可能重连或事务已收尾：带事务上下文的包发送前须经 mongo_txn_moved 复查
 
 /// <summary>
 /// 读回已组好的数据包里写着的消息标志位。
@@ -106,7 +107,7 @@ void *mongo_pack_update(mongo_ctx *mongo, char *updates, size_t ulens, char *opt
 /// <returns>数据包指针，需调用者释放；失败返回 NULL 并置 *size 为 0（情形见文件头）</returns>
 void *mongo_pack_delete(mongo_ctx *mongo, char *deletes, size_t dlens, char *options, size_t optlens, size_t *size);
 /// <summary>
-/// 构造 bulkWrite 命令请求包（批量写操作，MongoDB 8.0+）
+/// 构造 bulkWrite 命令请求包（批量写操作，MongoDB 8.0+）。恒发往 admin 库，$db 与 mongo 当前库无关
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <param name="ops">BSON 数组格式的操作列表；必填，不是一篇完整 BSON（判据见 bson_check_doc，NULL 与长度 0 都算）时整条命令作废；按文档序列(OP_MSG kind 1)跟在正文后发，元素须都是文档，否则整条命令作废</param>
@@ -135,7 +136,7 @@ void *mongo_pack_find(mongo_ctx *mongo, char *filter, size_t flens, char *option
 /// <param name="mongo">mongo_ctx</param>
 /// <param name="pipeline">BSON 数组格式的聚合管道阶段列表；必填，不是一篇完整 BSON（判据见 bson_check_doc，NULL 与长度 0 都算）时整条命令作废</param>
 /// <param name="pllens">pipeline 数据长度</param>
-/// <param name="options">附加 BSON 选项，NULL 表示无</param>
+/// <param name="options">附加 BSON 选项，NULL 表示无；自带 cursor(如 {batchSize:N} 定首批条数)就用它的，不带时补一个空的 cursor</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <param name="size">输出数据包长度</param>
 /// <returns>数据包指针，需调用者释放；失败返回 NULL 并置 *size 为 0（情形见文件头）</returns>
@@ -267,15 +268,16 @@ int32_t mongo_session_stale(mongo_session *session);
 /// 不带事务上下文的命令不用记，发送前传 MONGO_TXN_NONE
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
-/// <returns>连接绑着事务时为此刻的 skid，否则 MONGO_TXN_NONE；只用来交给 mongo_txn_moved</returns>
+/// <returns>连接绑着事务时为那次 begin 的 bindid，否则 MONGO_TXN_NONE；只用来交给 mongo_txn_moved</returns>
 uint64_t mongo_txn_mark(mongo_ctx *mongo);
 /// <summary>
-/// 拿到串行锁、发送之前复查：组包之后连接换过，包里带的是已作废事务的上下文，
-/// 发到新连接上会被收进那个事务，调用方须按组包失败处理（释放包、返回失败、不发）
+/// 拿到串行锁、发送之前复查：组包之后连接换过、或那个事务已收尾（commit / rollback / 会话释放 / 收尾后又 begin），
+/// 包里带的就是失效事务的上下文。照发会被收进作废的事务，或在服务端开出没人收尾的事务（首条带 startTransaction 时），
+/// 调用方须按组包失败处理（释放包、返回失败、不发）
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <param name="mark">组包前 mongo_txn_mark 的返回值</param>
-/// <returns>非 0 表示连接已换过；mark 为 MONGO_TXN_NONE 恒为 0</returns>
+/// <returns>非 0 表示组包时那个事务已失效；mark 为 MONGO_TXN_NONE 恒为 0</returns>
 int32_t mongo_txn_moved(mongo_ctx *mongo, uint64_t mark);
 /// <summary>
 /// 构造 commitTransaction 命令请求包（提交事务）

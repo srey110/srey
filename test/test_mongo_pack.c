@@ -83,6 +83,21 @@ static int32_t _bson_find_type(char *doc, size_t lens, const char *key) {
     return -1;
 }
 
+// BSON 顶层叫 key 的字段有几个：同名字段出现两次服务端拒收，查重用
+static int32_t _bson_count_key(char *doc, size_t lens, const char *key) {
+    bson_ctx bson;
+    bson_init(&bson, doc, lens);
+    bson_iter it;
+    bson_iter_init(&it, &bson);
+    int32_t n = 0;
+    while (bson_iter_next(&it)) {
+        if (0 == strcmp(it.key, key)) {
+            n++;
+        }
+    }
+    return n;
+}
+
 // 把 bson_ctx 已写好的文档挂成一个只读 mgopack_ctx，供 mongo_cursorid / parse_check_error 等吃
 static void _mgopack_of(mgopack_ctx *mg, bson_ctx *b) {
     ZERO(mg, sizeof(mgopack_ctx));
@@ -457,6 +472,15 @@ static void test_mongo_pack_update_delete_bulk(CuTest *tc) {
     CuAssertIntEquals(tc, 0, err);
     size_t send = _assert_seq(tc, (char *)pack, _MSG_HEAD_LENS + blens, size, "ops", 1);
     CuAssertIntEquals(tc, (int32_t)size, (int32_t)_assert_seq(tc, (char *)pack, send, size, "nsInfo", 1));
+    // 服务端只认发往 admin 的 bulkWrite：不跟连接当前库(testdb)走
+    CuAssertStrEquals(tc, "admin", _bson_find_utf8(bson, blens, "$db"));
+    FREE(pack);
+
+    // 对照：update 仍发往连接当前库
+    pack = mongo_pack_update(&mongo, arr.doc.data, arr.doc.offset, NULL, 0, &size);
+    bson = _assert_msg_head(tc, pack, size);
+    blens = (size_t)_read_le32(bson, 0);
+    CuAssertStrEquals(tc, "testdb", _bson_find_utf8(bson, blens, "$db"));
     FREE(pack);
 
     BSON_FREE(&arr);
@@ -510,7 +534,28 @@ static void test_mongo_pack_misc(CuTest *tc) {
     // 而 mongod 对缺 cursor 的 aggregate 直接回 "The 'cursor' option is required"
     CuAssertIntEquals(tc, BSON_ARRAY, _bson_find_type(bson, size - _MSG_HEAD_LENS, "pipeline"));
     CuAssertIntEquals(tc, BSON_DOCUMENT, _bson_find_type(bson, size - _MSG_HEAD_LENS, "cursor"));
+    CuAssertIntEquals(tc, 1, _bson_count_key(bson, size - _MSG_HEAD_LENS, "cursor"));
     FREE(pack);
+
+    // options 自带 cursor(定首批 batchSize)：用它的、不再补空的，cursor 只出现一次(两次服务端拒收)
+    bson_ctx opt;
+    bson_init(&opt, NULL, 0);
+    bson_append_document_begain(&opt, "cursor");
+    bson_append_int32(&opt, "batchSize", 7);
+    bson_append_end(&opt);
+    bson_append_end(&opt);
+    pack = mongo_pack_aggregate(&mongo, arr.doc.data, arr.doc.offset, opt.doc.data, opt.doc.offset, &size);
+    bson = _assert_msg_head(tc, pack, size);
+    CuAssertIntEquals(tc, 1, _bson_count_key(bson, size - _MSG_HEAD_LENS, "cursor"));
+    bson_ctx body;
+    bson_init(&body, bson, size - _MSG_HEAD_LENS);
+    bson_iter it;
+    bson_iter_init(&it, &body);
+    bson_iter found;
+    CuAssertIntEquals(tc, ERR_OK, bson_iter_find(&it, "cursor.batchSize", &found));
+    CuAssertIntEquals(tc, 7, (int32_t)bson_iter_int32(&found, NULL));
+    FREE(pack);
+    BSON_FREE(&opt);
 
     // getmore：含 getMore (int64) + collection。cursorid 必须原样落进 getMore 字段——
     // 这个值超出 int32 范围，所以"写 0"、"降成 int32 截断"、"键名拼错"三种改法
@@ -1064,6 +1109,22 @@ static void test_mongo_parse_check_error(CuTest *tc) {
         bson_append_double(&b, "ok", 1.0);
         bson_append_int32(&b, "nErrors", 2);
         bson_append_end(&b);
+        mgopack_ctx mg;
+        _mgopack_of(&mg, &b);
+        CuAssertIntEquals(tc, ERR_FAILED, mongo_parse_check_error(&mg));
+        BSON_FREE(&b);
+    }
+    // ok=1、n=1 之后的元素长度越界，后面的 writeErrors 读不到 → 不能按成功返回 1
+    {
+        bson_ctx b;
+        bson_init(&b, NULL, 0);
+        bson_append_double(&b, "ok", 1.0);
+        bson_append_int32(&b, "n", 1);
+        bson_append_utf8(&b, "x", "abc");
+        bson_append_int32(&b, "writeErrors", 1);
+        bson_append_end(&b);
+        // 文档头 4 + ok 元素 12 + n 元素 7 + "x" 的类型字节 1 与键名 2 = 26，即 "x" 的串长字段
+        write_le32(b.doc.data + 26, 0x7FFFFFFF);
         mgopack_ctx mg;
         _mgopack_of(&mg, &b);
         CuAssertIntEquals(tc, ERR_FAILED, mongo_parse_check_error(&mg));
@@ -1848,8 +1909,9 @@ static void test_mongo_pack_no_txn_cmds(CuTest *tc) {
     mongo_clear_session(&mongo);
     FREE(session.options);
 }
-// 组包前记现场、拿到锁后复查(mongo_txn_mark / mongo_txn_moved)：没绑事务记 MONGO_TXN_NONE、恒不算换过；
-// 绑着时记此刻的 skid，之后 skid 变了才算换过。从没连过(skid 为 0)时 begin 记下的 0 也照样比
+// 组包前记现场、拿到锁后复查(mongo_txn_mark / mongo_txn_moved)：没绑事务记 MONGO_TXN_NONE、恒不算失效；
+// 绑着时记那次 begin 的 bindid，之后连接换过、事务收尾、收尾后又 begin 都算失效。
+// 从没连过(skid 为 0)时 begin 记下的 0 也照样比
 static void test_mongo_txn_mark(CuTest *tc) {
     mongo_ctx mongo;
     _mongo_test_init(&mongo);
@@ -1863,7 +1925,8 @@ static void test_mongo_txn_mark(CuTest *tc) {
     session.mongo = &mongo;
     CuAssertIntEquals(tc, ERR_OK, mongo_begin(&session));
     uint64_t mark = mongo_txn_mark(&mongo);
-    CuAssertTrue(tc, 11 == mark);
+    CuAssertTrue(tc, session.bindid == mark);
+    CuAssertTrue(tc, MONGO_TXN_NONE != mark);
     CuAssertIntEquals(tc, 0, mongo_txn_moved(&mongo, mark));
     mongo.sk.skid = 12;// 排队等锁期间重连
     CuAssertTrue(tc, 0 != mongo_txn_moved(&mongo, mark));
@@ -1872,9 +1935,19 @@ static void test_mongo_txn_mark(CuTest *tc) {
     mongo.sk.skid = 0;
     CuAssertIntEquals(tc, ERR_OK, mongo_begin(&session));
     mark = mongo_txn_mark(&mongo);
-    CuAssertTrue(tc, 0 == mark);
+    CuAssertIntEquals(tc, 0, mongo_txn_moved(&mongo, mark));
     mongo.sk.skid = 13;
     CuAssertTrue(tc, 0 != mongo_txn_moved(&mongo, mark));
+
+    // 排队期间事务已收尾(解绑)：连接没换也算失效，否则首条写带着 startTransaction 开出没人收尾的事务
+    CuAssertIntEquals(tc, ERR_OK, mongo_begin(&session));
+    mark = mongo_txn_mark(&mongo);
+    mongo_clear_session(&mongo);
+    CuAssertTrue(tc, 0 != mongo_txn_moved(&mongo, mark));
+    // 收尾后同一 session 立刻又 begin：绑着的还是它、连接也没换，但已是另一次 begin
+    CuAssertIntEquals(tc, ERR_OK, mongo_begin(&session));
+    CuAssertTrue(tc, 0 != mongo_txn_moved(&mongo, mark));
+    CuAssertIntEquals(tc, 0, mongo_txn_moved(&mongo, mongo_txn_mark(&mongo)));
 
     mongo_clear_session(&mongo);
     FREE(session.options);
@@ -1895,7 +1968,7 @@ static void test_mongo_session_survives_reconnect(CuTest *tc) {
 
     mongo.sk.skid = 10;
     CuAssertIntEquals(tc, ERR_OK, mongo_begin(&session));
-    CuAssertIntEquals(tc, 1, session.txnnumber);
+    CuAssertTrue(tc, 1 == session.txnnumber);
     CuAssertTrue(tc, &session == mongo.session);
 
     // 重连：代次前进、skid 换掉，绑定不解(事务作废另见 test_mongo_txn_stale_after_reconnect)；
@@ -1903,7 +1976,7 @@ static void test_mongo_session_survives_reconnect(CuTest *tc) {
     mongo.generation = 4;
     mongo.sk.skid = 11;
     CuAssertIntEquals(tc, ERR_OK, mongo_begin(&session));
-    CuAssertIntEquals(tc, 2, session.txnnumber);
+    CuAssertTrue(tc, 2 == session.txnnumber);
     CuAssertTrue(tc, &session == mongo.session);
     CuAssertTrue(tc, 11 == session.skid);
 
@@ -1912,9 +1985,21 @@ static void test_mongo_session_survives_reconnect(CuTest *tc) {
     ZERO(&other, sizeof(other));
     other.mongo = &mongo;
     CuAssertIntEquals(tc, ERR_FAILED, mongo_begin(&other));
-    CuAssertIntEquals(tc, 0, other.txnnumber);
+    CuAssertTrue(tc, 0 == other.txnnumber);
     CuAssertTrue(tc, NULL == other.options);
     CuAssertTrue(tc, &session == mongo.session);
+
+    // txnNumber 线上是 int64：本地计数过了 INT32_MAX 照常递增，不回绕成负数
+    session.txnnumber = INT32_MAX;
+    CuAssertIntEquals(tc, ERR_OK, mongo_begin(&session));
+    CuAssertTrue(tc, (int64_t)INT32_MAX + 1 == session.txnnumber);
+    bson_ctx ob;
+    bson_init(&ob, session.options, session.optionslens);
+    bson_iter oit;
+    bson_iter_init(&oit, &ob);
+    bson_iter ofound;
+    CuAssertIntEquals(tc, ERR_OK, bson_iter_find(&oit, "txnNumber", &ofound));
+    CuAssertTrue(tc, (int64_t)INT32_MAX + 1 == bson_iter_int64(&ofound, NULL));
 
     FREE(session.options);
 }

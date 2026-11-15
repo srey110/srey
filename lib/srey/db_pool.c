@@ -496,12 +496,13 @@ void db_pool_put(db_pool_ctx *pool, void *conn) {
         return;
     }
     // 不能复用的（断了，或 MySQL 结果集收到一半）一律断开；到寿命的不交接；没到的先清会话状态。
-    // 都可能挂起，busy 仍占着
+    // 都可能挂起，busy 仍占着；reset 挂起期间断了同样按断开算
     int32_t quitted = 0;
     if (0 == pool->ops->ready(conn)
         || _expired(pool, slot, timer_cur_ms(&pool->timer))
         || (NULL != pool->ops->reset
-            && ERR_OK != pool->ops->reset(conn))) {
+            && (ERR_OK != pool->ops->reset(conn)
+                || 0 == pool->ops->ready(conn)))) {
         pool->ops->quit(conn);
         slot->born_at = 0;
         quitted = 1;

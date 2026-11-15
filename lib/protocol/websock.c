@@ -28,6 +28,7 @@ typedef struct websock_pack_ctx {
     int8_t fin;          // FIN 位：1=完整帧或最后一帧，0=分片中间帧
     int8_t prot;         // 操作码（ws_prot 枚举值）
     int8_t mask;         // 是否使用掩码（客户端发送时为 1）
+    int8_t midmsg;       // 1=分片消息收到一半时插进来的控制帧，不算等待者要的那条回复
     pack_type secprot;   // 子协议类型（如 PACK_MQTT）
     size_t remain;       // 帧数据段在缓冲区中的剩余待读字节数；单帧多包的链头上改记整条链的子协议字节数
     size_t dlens;        // 数据体长度（不含掩码键）
@@ -127,10 +128,12 @@ void *_websock_pack_next(void *pack) {
     return next;
 }
 // PING 不唤醒等响应的协程,PONG 可以。承载子协议时只有带出子协议包的帧才算响应:
-// secpack 为 NULL 的不能放过去,prots_may_resume 入口的 NULL 短路会让它恒可唤醒
+// secpack 为 NULL 的不能放过去,prots_may_resume 入口的 NULL 短路会让它恒可唤醒。
+// 分片消息中途插进来的控制帧也不唤醒：它的 slice 是 0，收分片的等待者会把它当成末片
 int32_t _websock_may_resume(void *data) {
     websock_pack_ctx *pack = (websock_pack_ctx *)data;
-    if (WS_PING == pack->prot) {
+    if (WS_PING == pack->prot
+        || 0 != pack->midmsg) {
         return ERR_FAILED;
     }
     if (PACK_NONE != pack->secprot
@@ -814,6 +817,7 @@ static websock_pack_ctx *_websock_parse_head(buffer_ctx *buf, int32_t client, ud
     pack->fin = fin;
     pack->prot = prot;
     pack->mask = mask;
+    pack->midmsg = (prot >= 0x8 && 0 != ws->slice) ? 1 : 0;
     pack->secprot = ws->secprot;
     pack->secpack = NULL;
     ws->pack = pack;

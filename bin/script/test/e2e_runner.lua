@@ -1,5 +1,5 @@
 -- e2e 自动化 runner：用 srey.popen 起 python3 bin/py_assist/test_*.py 子进程，
--- 等 server_http/ws/mqtt task 就绪（它们在 test.lua 里排在本 task 之后注册，listen 也是异步的）后串行跑，
+-- 等 server_http/ws/mqtt task 就绪（它们的 startup 由 worker 择时派发，与注册顺序无关）后串行跑，
 -- 把每个脚本的 exit code 转成 npass/nfail，向 reporter 上报为单一模块 "e2e"。
 
 local srey   = require("lib.srey")
@@ -28,7 +28,7 @@ end
 local _PY_DIR = _propath .. _pathsep .. "py_assist" .. _pathsep
 
 srey.startup(function()
-    -- 给 server task 一点时间完成 srey.listen（startup 是 coroutine 化的，需要让出）
+    -- 等各 server task 的 startup 被派发、跑完 srey.listen（派发顺序与注册顺序无关）
     srey.sleep(1000)
     runner.run(function(t)
         for _, name in ipairs(_SCRIPTS) do
@@ -94,8 +94,8 @@ srey.startup(function()
             else
                 t:fail(name .. ": python timeout " .. _PY_TIMEOUT_MS .. "ms")
             end
-            -- 两条分支都要 close：ctx 只是个 local，回收全靠 __gc，而这个循环几乎不分配、
-            -- GC 未必在下一轮前触发，四条 socketpair fd 会一直攥到 e2e 阶段结束
+            -- 两条分支都要 close：POSIX 上 waitexit 不收尸，不 close 僵尸要留到 __gc；超时分支还靠它杀掉整组。
+            -- 读写句柄 close 不关，仍要等 __gc
             ctx:close()
             ::continue::
         end

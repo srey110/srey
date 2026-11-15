@@ -21,7 +21,8 @@ local ctx = class("mysql_ctx", pub)
 ---@param sslname SSL_NAME SSL 上下文名；SSL_NAME.NONE 表示明文
 ---@param user string 用户名，最长 128 字节
 ---@param password string 密码，最长 256 字节。caching_sha2_password 账号在明文连接上遇到服务端缓存未命中（如服务端重启后首连）
----认证失败：明文下不做 RSA 公钥交换。出路：配 SSL、先经 SSL 登录一次让服务端缓存口令，或换 mysql_native_password 账号(MySQL 8.4 默认关、9.0 已移除该插件)
+---要做完整认证，须有服务端 RSA 公钥：经 set_pubkey 设本地公钥，或经 set_pubkey_request 允许向服务端要；都没有则认证失败。
+---也可以配 SSL，或换 mysql_native_password 账号(MySQL 8.4 默认关、9.0 已移除该插件)
 ---@param database string 初始数据库，最长 256 字节
 ---@param charset string 字符集（如 "utf8mb4"）
 ---@param maxpk integer? 单包最大字节数，0 使用默认
@@ -54,9 +55,6 @@ function ctx:_connect()
     return ok
 end
 
----切换当前数据库（COM_INIT_DB）。池里借出的连接换了库要在归还前换回去，reset_session 不管库名
----@param database string 目标数据库名
----@return boolean ok 切换成功 true（库名超 256 字节时不发包直接返 false）
 ---设置服务端 RSA 公钥（PEM），明文连接上完整认证时用它加密口令，说明同 C 侧 mysql_set_pubkey。
 ---与 connect 同在 self.serial 里排队：重连握手要读它
 ---@param pem string? 公钥 PEM；nil 或空串清掉已设的公钥
@@ -72,6 +70,9 @@ function ctx:set_pubkey_request(on)
     return srey.serial_ret(false, self.serial(self.mysql.set_pubkey_request, self.mysql, on))
 end
 
+---切换当前数据库（COM_INIT_DB）。池里借出的连接换了库要在归还前换回去，reset_session 不管库名
+---@param database string 目标数据库名
+---@return boolean ok 切换成功 true（库名超 256 字节时不发包直接返 false）
 function ctx:selectdb(database)
     return srey.serial_ret(false, self.serial(self._selectdb, self, database))
 end

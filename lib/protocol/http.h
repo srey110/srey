@@ -46,7 +46,8 @@ void *_http_on_close(ud_cxt *ud);
 /// <param name="buf">接收缓冲区</param>
 /// <param name="ud">连接上下文，内部维护解析状态</param>
 /// <param name="client">1 表示本端是客户端（收到的是响应），0 表示收到的是请求。
-/// 只对响应成立的两条规则都靠它：1xx/204/304 无报文体；以及既无 Content-Length 又无
+/// 首行按它认形状：服务端要请求行(末段是 HTTP 版本)，客户端要状态行(首段是 HTTP 版本，可省略 reason)，形状不对判协议错误。
+/// 只对响应成立的两条规则也靠它：1xx/204/304 无报文体；以及既无 Content-Length 又无
 /// Transfer-Encoding、或 Transfer-Encoding 最后一层不是 chunked 时 body 由连接关闭界定(RFC 7230 §3.3.3 规则 7 / 规则 3)。
 /// 本端解析不出方向，故须由调用方给。
 /// 连接关闭界定那档按分片投递：头部包带 PROT_SLICE_START，body 逐段带 PROT_SLICE，

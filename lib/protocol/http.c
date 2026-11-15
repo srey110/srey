@@ -264,8 +264,7 @@ int32_t http_is_interim(http_pack_ctx *pack) {
     return _http_interim_resp(pack, 1);
 }
 // 收到的这个包是否 RFC 7230 §3.3.3 规则 1 里"一律无报文体"的响应。
-// client 为 0 时收到的是请求，一律返 0：本端解析不出方向——_http_parse_status 只要求首段或末段
-// 是 HTTP-version，"HTTP/1.1 204 z" 这种伪请求行照样能过，在服务端按响应处理就是一次请求走私
+// client 为 0 时收到的是请求，一律返 0：在服务端按响应处理就是一次请求走私
 static inline int32_t _http_nobody_resp(http_pack_ctx *pack, int32_t client) {
     if (0 == client
         || !_http_is_version(&pack->status[0])
@@ -295,10 +294,10 @@ static inline char *_http_line_end(const char *head, const char *end) {
     }
     return (char *)cr;
 }
-// 解析 HTTP 第一行（请求行或状态行），填充 pack->status[0..2]，返回指向第一个头部字段的指针。
-// 状态行 HTTP-version 在首段、请求行在末段，故两段须恰有一段是 HTTP-version：
+// 解析 HTTP 第一行（客户端收状态行、服务端收请求行），填充 pack->status[0..2]，返回指向第一个头部字段的指针。
+// 状态行 HTTP-version 在首段、请求行在末段，按方向只认对应的那一种：
 // 请求行末段因此不能含多余 SP，也不能是任意垃圾串
-static inline char *_http_parse_status(http_pack_ctx *pack) {
+static inline char *_http_parse_status(http_pack_ctx *pack, int32_t client) {
     char *head = pack->head.data;
     if (0 == pack->head.lens
         || is_ows(*head)) {
@@ -317,8 +316,8 @@ static inline char *_http_parse_status(http_pack_ctx *pack) {
     pack->status[0].lens = (size_t)(sp[0] - head);
     sp[1] = memchr(sp[0] + 1, ' ', (size_t)(pcrlf - sp[0] - 1));
     if (NULL == sp[1]) {
-        // 状态行省略 reason 时常连空格一起省：只放行首段是 HTTP-version 的，reason 按空
-        if (!_http_is_version(&pack->status[0])) {
+        // 状态行省略 reason 时常连空格一起省，reason 按空；请求行三段缺一不可
+        if (0 == client) {
             return NULL;
         }
         sp[1] = pcrlf;
@@ -332,8 +331,7 @@ static inline char *_http_parse_status(http_pack_ctx *pack) {
         || 0 == pack->status[1].lens) {
         return NULL;
     }
-    if (!_http_is_version(&pack->status[0])
-        && !_http_is_version(&pack->status[2])) {
+    if (!_http_is_version(&pack->status[0 != client ? 0 : 2])) {
         return NULL;
     }
     return pcrlf + CRLF_SIZE;
@@ -391,7 +389,7 @@ static inline void _http_header_push(http_pack_ctx *pack, http_header_ctx *field
 // 头块里出现 NUL 即拒，由逐行扫描顺带挡掉(见 _http_find_eol)。
 // 响应的 TE 最后一层不是 chunked 时 *transfer 改记 TILLCLOSE(RFC 7230 §3.3.3 规则 3)，请求的则拒
 static int32_t _http_parse_head(http_pack_ctx *pack, int32_t client, int32_t *transfer) {
-    char *head = _http_parse_status(pack);
+    char *head = _http_parse_status(pack, client);
     if (NULL == head) {
         return ERR_FAILED;
     }

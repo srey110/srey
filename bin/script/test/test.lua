@@ -1,6 +1,7 @@
 -- 测试 task 注册：集中注册所有 unit/db/server 测试 task 与 reporter。
 -- 由 startup.lua 在公共初始化(lib.define/utils/log + SSL 证书)后调用 register()。
 -- 不依赖集成环境的 unit 测试 + 依赖 docker 的 db 测试 + reporter 汇总。
+-- 没起 docker 时 db 测试判失败（C 侧 ./bin/test 记 network error 放过），跑全套前先起 docker-compose。
 
 local srey = require("lib.srey")
 local task = require("srey.task")

@@ -1388,6 +1388,7 @@ static void test_mpack_ok_track_truncated(CuTest *tc) {
     CuAssertIntEquals(tc, 1, (int)mysql_pack_affected_rows(mpack));
     CuAssert(tc, "truncated session-track must not corrupt the database name",
         '\0' == mysql.client.database[0]);
+    CuAssertPtrEquals(tc, NULL, mpack->database);
     _mysql_pkfree(mpack);
     binary_free(&bw);
 
@@ -1407,6 +1408,7 @@ static void test_mpack_ok_track_truncated(CuTest *tc) {
     CuAssertTrue(tc, NULL != mpack);
     CuAssert(tc, "truncated session-state length must not abort",
         '\0' == mysql.client.database[0]);
+    CuAssertPtrEquals(tc, NULL, mpack->database);
     _mysql_pkfree(mpack);
     binary_free(&bw);
 }
@@ -2409,6 +2411,10 @@ static void test_mpack_deprecate_eof_resultset(CuTest *tc) {
     CuAssertIntEquals(tc, 0, (int)mpack->more);
     reader = mpack->pack;
     CuAssertIntEquals(tc, 1, (int)mrow_arr_size(&reader->arr_rows));
+    // 解析只把新库名挂在包上，收应答的一方 mysql_record 时才落到连接
+    CuAssertStrEquals(tc, "", mysql.client.database);
+    CuAssertStrEquals(tc, "newdb", mpack->database);
+    mysql_record(&mysql, mpack);
     CuAssertStrEquals(tc, "newdb", mysql.client.database);
     CuAssertTrue(tc, 0 == mysql_pack_affected_rows(mpack));
     CuAssertIntEquals(tc, 0, (int)mysql.cur_cmd);
@@ -2864,7 +2870,8 @@ static void test_mysql_init_limits(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_FAILED, mysql_init(&mysql, "127.0.0.1", 0, NULL,
         "u", "p", _t_astr(s, MYSQL_DB_LENS + 1), "utf8mb4", 0));
 }
-// COM_INIT_DB 的应答：OK 才把 pending_db 提交进 client.database(重连握手用它)，ERR 不提交
+// COM_INIT_DB 的应答：OK 才把 pending_db 挂到包上、mysql_record 时提交进 client.database(重连握手用它)，ERR 不提交。
+// 没人 record 的 OK(超时后晚到的应答)不改库名；USE 经 session track 回带的同理
 static void test_mpack_init_db_commit(CuTest *tc) {
     const char ok[7] = { MYSQL_OK, 0, 0, 2, 0, 0, 0 };
     const char err[] = { (char)MYSQL_ERR, 0x19, 0x04, '#', '4', '2', '0', '0', '0', 'n', 'o' };// 1049
@@ -2888,9 +2895,61 @@ static void test_mpack_init_db_commit(CuTest *tc) {
     mpack = _mysql_feed(&mysql, ok, sizeof(ok), &status);
     CuAssertPtrNotNull(tc, mpack);
     CuAssertIntEquals(tc, MPACK_OK, (int)mpack->pack_type);
-    CuAssertStrEquals(tc, "newdb", mysql.client.database);
+    CuAssertStrEquals(tc, "olddb", mysql.client.database);
+    CuAssertStrEquals(tc, "newdb", mpack->database);
     CuAssertIntEquals(tc, 0, (int)mysql.cur_cmd);
+    mysql_record(&mysql, mpack);
+    CuAssertStrEquals(tc, "newdb", mysql.client.database);
     _mysql_pkfree(mpack);
+    // query("USE trackdb") 的 OK 带 session track
+    const char use[] = { MYSQL_OK, 0, 0, 0x00, 0x40, 0, 0, 0, 10, SESSION_TRACK_SCHEMA, 8, 7,
+                         't', 'r', 'a', 'c', 'k', 'd', 'b' };
+    mysql.cur_cmd = MYSQL_QUERY;
+    mpack = _mysql_feed(&mysql, use, sizeof(use), &status);
+    CuAssertPtrNotNull(tc, mpack);
+    CuAssertIntEquals(tc, MPACK_OK, (int)mpack->pack_type);
+    CuAssertStrEquals(tc, "newdb", mysql.client.database);
+    CuAssertStrEquals(tc, "trackdb", mpack->database);
+    mysql_record(&mysql, mpack);
+    CuAssertStrEquals(tc, "trackdb", mysql.client.database);
+    _mysql_pkfree(mpack);
+}
+// session track 回带的库名：恰 MYSQL_DB_LENS 字节照收，多 1 字节装不进 client.database、不挂上包
+static void test_mpack_track_schema_bound(CuTest *tc) {
+    const unsigned char head[] = { MYSQL_OK, 0, 0, 0x00, 0x40, 0, 0, 0 };
+    unsigned char pk[32 + MYSQL_DB_LENS + 1];
+    mysql_ctx mysql;
+    mpack_ctx *mpack;
+    int32_t status;
+    for (size_t nlen = MYSQL_DB_LENS; nlen <= MYSQL_DB_LENS + 1; nlen++) {
+        size_t dlen = 3 + nlen;// 库名的 lenenc(0xfc 加 2 字节)加库名
+        size_t tlen = 1 + 3 + dlen;// 类型、数据长度的 lenenc、数据
+        size_t n = sizeof(head);
+        memcpy(pk, head, sizeof(head));
+        pk[n++] = 0xfc; pk[n++] = (unsigned char)(tlen & 0xff); pk[n++] = (unsigned char)(tlen >> 8);
+        pk[n++] = SESSION_TRACK_SCHEMA;
+        pk[n++] = 0xfc; pk[n++] = (unsigned char)(dlen & 0xff); pk[n++] = (unsigned char)(dlen >> 8);
+        pk[n++] = 0xfc; pk[n++] = (unsigned char)(nlen & 0xff); pk[n++] = (unsigned char)(nlen >> 8);
+        memset(pk + n, 'd', nlen);
+        n += nlen;
+        ZERO(&mysql, sizeof(mysql));
+        safe_fill_str(mysql.client.database, sizeof(mysql.client.database), "olddb");
+        mysql.cur_cmd = MYSQL_QUERY;
+        mpack = _mysql_feed(&mysql, pk, n, &status);
+        CuAssertPtrNotNull(tc, mpack);
+        CuAssertIntEquals(tc, MPACK_OK, (int)mpack->pack_type);
+        if (MYSQL_DB_LENS == nlen) {
+            CuAssertPtrNotNull(tc, mpack->database);
+            CuAssertIntEquals(tc, (int)nlen, (int)strlen(mpack->database));
+            mysql_record(&mysql, mpack);
+            CuAssertIntEquals(tc, (int)nlen, (int)strlen(mysql.client.database));
+        } else {
+            CuAssertTrue(tc, NULL == mpack->database);
+            mysql_record(&mysql, mpack);
+            CuAssertStrEquals(tc, "olddb", mysql.client.database);
+        }
+        _mysql_pkfree(mpack);
+    }
 }
 // COM_QUERY 应答首字节 0xfb 是 LOCAL INFILE 请求：不支持，按协议错误断连，不能当列数读下去
 static void test_mpack_local_infile_reject(CuTest *tc) {
@@ -3106,7 +3165,7 @@ static void test_mysql_auth_process(CuTest *tc) {
     _mysql_auth_feed(&mysql, &ud, _MY_AUTH_PROCESS, fast, sizeof(fast), 2, &status);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, 2, (int)mysql.id);
-    // 2) 完整认证 01 04：明文连接不做 RSA 公钥交换，直接认证失败、不发包(序号不动)；
+    // 2) 完整认证 01 04：明文下没配公钥也没允许去要，直接认证失败、不发包(序号不动)；
     //    走了 TLS(CLIENT_SSL)才明文发口令，序号 +1 后发包失败
     _mysql_auth_feed(&mysql, &ud, _MY_AUTH_PROCESS, full, sizeof(full), 2, &status);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
@@ -3256,6 +3315,7 @@ void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mysql_charset_lookup);
     SUITE_ADD_TEST(suite, test_mysql_init_limits);
     SUITE_ADD_TEST(suite, test_mpack_init_db_commit);
+    SUITE_ADD_TEST(suite, test_mpack_track_schema_bound);
     SUITE_ADD_TEST(suite, test_mpack_local_infile_reject);
     SUITE_ADD_TEST(suite, test_mysql_auth_handshake);
     SUITE_ADD_TEST(suite, test_mysql_wire_charset);

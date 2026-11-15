@@ -14,8 +14,8 @@ static atomic_t _recv_count;
 
 // 单播自收回调：验证 task_recvedfrom 路径基本工作
 static void _net_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype,
-                          const netaddr_ctx *addr, void *data, size_t size) {
-    (void)task; (void)sk; (void)pktype; (void)addr;
+                          const netaddr_ctx *addr, void *data, size_t size, uint64_t sess) {
+    (void)task; (void)sk; (void)pktype; (void)addr; (void)sess;
     if (UNI_LEN == size && 0 == memcmp(data, UNI_MSG, UNI_LEN)) {
         ATOMIC_ADD(&_recv_count, 1);
     }

@@ -70,25 +70,37 @@ runner.run(function(t)
     end
     collectgarbage("collect")
 
-    -- ── 5) writer 退出后 reader 状态: 旧 lastcopy 仍可读; 新 stm_grab_data 返 NULL → updated=false
+    -- ── 5) writer 退出后 reader 状态: stm_grab_data 返 NULL → read 返 nil(与没更新的 false 分开), 之后每次都是 nil
     do
         local w = stm.new("survive")
         local r = stm.newcopy(stm.copy(w))
         local got
         r(function(lud, sz) got = utils.ud_str(lud, sz) end)
         t:eq("survive", got, "writer 在: 首次读 survive")
-        -- 丢 writer 之前先 update 一次：不这么做的话 lastcopy 与当前快照相同，
-        -- lstm.c 的判定顺序（先比 lastcopy、后判 NULL）会让"writer 真被 finalize"与
-        -- "根本没 finalize"两条路都返 false，本用例与用例 3 同解、分不出真假
-        w("survive2")
         -- 主动让 writer 出作用域 + 强制 GC 触发 __gc → stm_free
         w = nil
         collectgarbage("collect")
-        -- 之后 r 调 read: ctx->data 已被 writer 清掉, stm_grab_data 返 NULL, updated=false
+        -- 之后 r 调 read: ctx->data 已被 writer 清掉, stm_grab_data 返 NULL, 返 nil;
+        -- 第二次 lastcopy 已清成 NULL, 仍须返 nil 而不是当成没更新
         local count = 0
         local upd = r(function() count = count + 1 end)
-        t:eq(false, upd, "writer 退出后 read updated=false")
+        t:eq(nil, upd, "writer 退出后 read 返 nil")
+        upd = r(function() count = count + 1 end)
+        t:eq(nil, upd, "writer 退出后再读仍返 nil")
         t:eq(0, count, "func 不被调用")
+    end
+    collectgarbage("collect")
+
+    -- ── 5b) 一次没读过 writer 就释放(lastcopy 为 NULL): 同样返 nil
+    do
+        local w = stm.new("never")
+        local r = stm.newcopy(stm.copy(w))
+        w = nil
+        collectgarbage("collect")
+        local count = 0
+        local upd = r(function() count = count + 1 end)
+        t:eq(nil, upd, "没读过就释放: read 返 nil")
+        t:eq(0, count, "没读过就释放: func 不被调用")
     end
     collectgarbage("collect")
 

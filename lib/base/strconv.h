@@ -11,8 +11,8 @@
 /// 按长度解析十进制无符号整数：只认数字，不接受前导空白与正负号，不要求 NUL 结尾。
 /// 协议层拿到的普遍是切片，长度之外的字节不属于本值
 /// </summary>
-/// <param name="str">数值起始位置，不要求 NUL 结尾</param>
-/// <param name="lens">参与解析的字节数，须 大于 0</param>
+/// <param name="str">数值起始位置，不要求 NUL 结尾；NULL 视为失败</param>
+/// <param name="lens">参与解析的字节数；0 视为失败</param>
 /// <param name="max">允许的最大值，超出即失败（可直接传目标类型的 *_MAX 折叠上界检查）</param>
 /// <param name="out">输出：解析结果；失败时不写</param>
 /// <returns>ERR_OK 成功；空串 / 含任一非数字字符 / 溢出 / 超过 max 均返回 ERR_FAILED</returns>

@@ -159,7 +159,8 @@ end
 
 ---解析 ws:// 或 wss:// URL，建立 WebSocket 连接并完成握手
 ---@param ws string WebSocket URL，如 "ws://host:port/path"
----@param sslname SSL_NAME wss 时必须为有效 SSL 上下文名；ws 时传 SSL_NAME.NONE
+---@param sslname SSL_NAME wss 时必须为有效 SSL 上下文名；ws 时传 SSL_NAME.NONE。URL 里的主机名只进 Host 头，
+--- SNI 与证书主机名比对按该上下文 srey.ssl.host 设的名字，一个主机一个上下文
 ---@param secprot string? 子协议名（Sec-WebSocket-Protocol），可逗号分隔多个。
 --- 协商到 "mqtt" 时本函数只完成 WS 握手，上下文还须经 mqtt.ws_bind 注入，约束见该函数文档
 ---@param netev NET_EV? 事件订阅掩码

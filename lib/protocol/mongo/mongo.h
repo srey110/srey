@@ -44,7 +44,7 @@ int32_t mongo_init(mongo_ctx *mongo, const char *ip, uint16_t port, struct evssl
 /// <returns>ERR_OK 成功；超 63 字节返 ERR_FAILED 并记 LOG_ERROR，不改动任何字段</returns>
 int32_t mongo_db(mongo_ctx *mongo, const char *db);
 /// <summary>
-/// 设置当前验证数据库
+/// 设置当前验证数据库，下次认证生效；连上之后再改的要求同 mongo_user_pwd
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <param name="db">数据库</param>
@@ -59,7 +59,7 @@ int32_t mongo_authdb(mongo_ctx *mongo, const char *db);
 /// 调用方必须据此原地失败：继续发命令会打到上一个集合上（写入还会自动建集合）</returns>
 int32_t mongo_collection(mongo_ctx *mongo, const char *collection);
 /// <summary>
-/// 设置用户名 密码
+/// 设置用户名 密码，下次认证生效。连上之后再改，须确知本连接上没有命令或重连在途(重连的认证在网络线程上读它)
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <param name="user">用户名</param>

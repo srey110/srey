@@ -150,9 +150,12 @@ static void _startup(task_ctx *task) {
 }
 void task_ssl_keyupdate_start(loader_ctx *loader, const char *name, uint16_t port,
     void *evssl, int32_t *ok) {
-    if (NULL == ok
-        || 0 == port
+    if (NULL == ok) {
+        return;
+    }
+    if (0 == port
         || NULL == evssl) {
+        test_fail(ok);// 起不了就写终态，汇总不必等满超时
         return;
     }
     ssl_keyupdate_args *arg;

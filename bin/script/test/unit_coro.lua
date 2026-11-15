@@ -39,8 +39,8 @@ local WS_PORT = 15133
 local SESS_PORT = 15134
 local SESS_ANY_PORT = 15135 -- 同上，MQTT 服务端用 syn_recv_any 收客户端的 CONNECT
 local SESS_CLOSE_PORT = 15137 -- 服务端 accept 来的 sk 被 CLOSE 唤醒置失效那段
--- 客户端校验主机名那小段：OpenSSL 的 SSL_VERIFY_PEER，与两个只带 CA、开了它的客户端上下文名
-local SSL_VERIFY_PEER = 1
+local INJ_PORT = 15138 -- 带内升级防注入那段
+-- 客户端校验主机名那小段：两个只带 CA、开了 SSL_VERIFY.PEER 的客户端上下文名
 local SSL_VHOST = "unit_coro_vhost"
 local SSL_VCHAIN = "unit_coro_vchain"
 local NSEND    = 4
@@ -575,6 +575,16 @@ runner.run(function(t)
         t:eq(false, ok, "with_timeout 里的错误往上抛")
         t:eq("boom", err, "错误原样抛出")
         t:eq(base, srey.coro_timeout_get("netread"), "抛错后已恢复")
+        -- 栈要从 fn 里出错的地方取：原先 pcall 拦下再重抛，栈只从 with_timeout 开始
+        local function _tmo_deep_boom() error("deep", 0) end
+        local ok3, tb = xpcall(srey.with_timeout, debug.traceback, { netread = 900 }, function() _tmo_deep_boom() end)
+        t:eq(false, ok3, "with_timeout 里的错误经 xpcall 抛出")
+        t:check(nil ~= string.find(tostring(tb), "_tmo_deep_boom", 1, true), "with_timeout 抛错保留 fn 内的调用栈")
+        t:eq(base, srey.coro_timeout_get("netread"), "xpcall 路径抛错后也已恢复")
+        local ok4, err4 = pcall(coroutine.wrap(function() return srey.coro_timeout_get("netread") end))
+        t:eq(false, ok4, "裸 coroutine.wrap 里 coro_timeout_get 抛错")
+        t:check(nil ~= string.find(tostring(err4), "srey.coro_timeout_get must be called from within", 1, true),
+            "coro_timeout_get 协程外报错信息")
         local a, b = srey.with_timeout({ netread = 800 }, function(x)
             local inner = srey.with_timeout({ netread = 600 }, srey.coro_timeout_get, "netread")
             return inner, srey.coro_timeout_get("netread") + x
@@ -947,13 +957,13 @@ runner.run(function(t)
                 t:eq("tls-echo", rd and srey.ud_str(rd, rs), "TLS 连接上收发正常")
                 srey.sync_close(sk)
             end
-            -- 开 SSL_VERIFY_PEER：设了主机名而服务端证书不是签给它的，握手必须失败；
+            -- 开 SSL_VERIFY.PEER：设了主机名而服务端证书不是签给它的，握手必须失败；
             -- 同样的 CA 与校验、不设主机名的能连上，说明挡下的是主机名而不是证书链
             local vhost = sssl.cert_register(SSL_VHOST, "ca.crt", "", "")
             local vchain = sssl.cert_register(SSL_VCHAIN, "ca.crt", "", "")
             if t:check(vhost and vchain, "注册两个只带 CA 的客户端上下文") then
-                sssl.verify(vhost, SSL_VERIFY_PEER)
-                sssl.verify(vchain, SSL_VERIFY_PEER)
+                sssl.verify(vhost, SSL_VERIFY.PEER)
+                sssl.verify(vchain, SSL_VERIFY.PEER)
                 t:eq(true, sssl.host(vhost, "wrong.example.com"), "ssl_host 设主机名")
                 sk = srey.connect(PACK_TYPE.NONE, SSL_VHOST, "127.0.0.1", TLS_PORT)
                 t:eq(false, sk.valid, "主机名与证书对不上时握手失败")
@@ -1109,6 +1119,55 @@ runner.run(function(t)
                 t:eq(mqtt.PROT.SUBSCRIBE, sub, "SUBSCRIBE 落到 on_recved")
                 srey.close(sk)
                 -- 两端的 CLOSE 都到了，条目才删干净；等它回到基线，免得下一段数条目时差一
+                deadline = srey.timer_ms() + 2000
+                while _sessions() > s0 and srey.timer_ms() < deadline do
+                    srey.sleep(10)
+                end
+                t:check(_sessions() <= s0, "两端关闭后会话条目回到基线")
+            end
+            srey.unlisten(lid)
+        end
+        srey.on_recved(_echo)
+    end
+
+    -- ── 带内升级防注入：客户端把升级请求与一条明文命令一次写过去，服务端收到请求后 send_ssl 并等握手结果。
+    -- 两条同一次读到、都已解成包，后面那条在等握手期间投来：框架须丢掉它并关连接，不交给 on_recved。
+    -- 用 CUSTZ_FIXED(4 字节大端长度头)让两条解成两个包；没编 SSL 或证书没生成时跳过
+    if srey.ssl_query(SSL_NAME.SERVER) then
+        local exchanged, injected
+        local s0 = _sessions()
+        local function frame(str)
+            return string.pack(">I4", #str) .. str
+        end
+        srey.on_recved(function(_, _, client, _, data, size)
+            if 0 == client then
+                injected = srey.ud_str(data, size)
+            end
+        end)
+        srey.on_accepted(function(_, ask)
+            local rd, rs = srey.syn_recv_any(ask)
+            if rd and "starttls" == srey.ud_str(rd, rs) then
+                local go = frame("go")
+                srey.send_ssl(ask, 0, SSL_NAME.SERVER, go, #go, 1)
+                exchanged = srey.wait_ssl_exchanged(ask)
+            else
+                exchanged = "no request"
+            end
+        end)
+        local lid = srey.listen(PACK_TYPE.CUSTZ_FIXED, SSL_NAME.NONE, "127.0.0.1", INJ_PORT,
+                                NET_EV.ACCEPT | NET_EV.SESS | NET_EV.AUTHSSL)
+        if t:check(ERR_FAILED ~= lid, "listen " .. INJ_PORT) then
+            local sk = srey.connect(PACK_TYPE.CUSTZ_FIXED, SSL_NAME.NONE, "127.0.0.1", INJ_PORT)
+            if t:check(sk.valid, "connect " .. INJ_PORT) then
+                local two = frame("starttls") .. frame("evil")
+                t:check(srey.send(sk, two, #two, 1), "升级请求与注入的明文一次写入")
+                local deadline = srey.timer_ms() + 3000
+                while nil == exchanged and srey.timer_ms() < deadline do
+                    srey.sleep(10)
+                end
+                t:eq(false, exchanged, "等握手结果期间来了明文：连接被关，wait_ssl_exchanged 返回 false")
+                t:eq(nil, injected, "注入的那条没交给 on_recved")
+                srey.close(sk)
                 deadline = srey.timer_ms() + 2000
                 while _sessions() > s0 and srey.timer_ms() < deadline do
                     srey.sleep(10)

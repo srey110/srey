@@ -103,7 +103,8 @@ void evssl_seclevel(evssl_ctx *evssl, int32_t level);
 /// 此时最低版本保持原样——不判返回值就会以为下限抬上去了，实际仍在接受更低的版本</returns>
 int32_t evssl_min_proto(evssl_ctx *evssl, int32_t version);
 /// <summary>
-/// 释放evssl_ctx
+/// 释放evssl_ctx。须活得比拿它监听、建连、切换的所有连接以及在途的 ev_ssl / ev_send_ssl 命令都久：
+/// 事件层存的是裸指针，之后 accept / 握手还会用它。注册进池的由 evssl_pool_free 统一放，别再单独释放
 /// </summary>
 /// <param name="evssl">evssl_ctx</param>
 void evssl_free(evssl_ctx *evssl);

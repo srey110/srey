@@ -8,7 +8,7 @@
 // tick 调度方式:1=最小堆早退(会话多且同时到期少时占优;空闲会话摘出堆停表,send / input 时挂回;死链会话拆掉投 CLOSE);
 // 0=kcp_map_scan 全量扫描(同时到期会话占多数时占优;不停表、不判死链,仅作对照)
 #define KCP_TICK_HEAP 1
-#define KCP_SENDQ_MAX 65536 // 单会话发送积压上限(段数,约 90MB),到了就拆会话,见 kcp_send
+#define KCP_SENDQ_MAX 65536 // 单会话发送积压上限(段数;默认 mtu 下约 90MB,随 mtu 放大),到了就拆会话,见 kcp_send
 #define KCP_MTU_MAX 65507 // mtu 上限:UDP 单报最大载荷(按 IPv4 算,IPv6 也能用),再大满段发不出去
 // kcp 会话句柄(值类型,业务持有):仅标识一个会话,不持有会话对象本身。
 // 会话对象(含 ikcpcb)在调用 kcp_start 的线程上建好后交给 event 线程入表,此后查/释放都在 event 线程,
@@ -75,7 +75,8 @@ void kcp_init(kcp_ctx *kcp, ev_ctx *netev, sock_ctx *sk, uint32_t conv);
 /// 建立 kcp 会话(异步,发起后立即返回):建好后收到的数据以 MSG_TYPE_RECVFROM 推给 handle 所属 task。
 /// 建立结果以 MSG_TYPE_HANDSHAKED 推回(erro 为 ERR_OK;conv 冲突或 fd 不是 UDP_KCP 时 ERR_FAILED,
 /// 随后再补一条 erro 为 CLOSE_TYPE_NEVERCONN 的 MSG_TYPE_CLOSE),要同步等用 kcp_synstart。
-/// 本会话的 RECVFROM / HANDSHAKED / CLOSE 都带本次 sess。会话关闭(kcp_stop、死链、UDP socket 关闭时逐会话补发)
+/// 本会话的 RECVFROM / HANDSHAKED / CLOSE 都带本次 sess，task_recvedfrom / task_handshaked / task_closed 的回调都交出它，
+/// 同一 socket 上多个会话、stop 后重启时排在队列里的旧会话消息都靠它分。会话关闭(kcp_stop、死链、UDP socket 关闭时逐会话补发)
 /// 进 task_closed 回调:sess 参数即本会话的 sess,sk 是承载它的 UDP socket;sess 等于 sk->skid 的才是 socket 本身关闭。
 /// 对端失联(某段重传到 dead_link 次,库默认 20;仅 KCP_TICK_HEAP 为 1)时会话被拆除并推 MSG_TYPE_CLOSE
 /// (erro 为 CLOSE_TYPE_ABORT),之后可直接 kcp_start 重启;被它唤醒的 kcp_synsend 已把句柄置停。
@@ -92,7 +93,8 @@ void kcp_init(kcp_ctx *kcp, ev_ctx *netev, sock_ctx *sk, uint32_t conv);
 ///   之后严格校验。学到之前本端发出的段被丢掉(学到后靠重传补上,故应让对端先发),这期间猜中 conv 的任何来源
 ///   都能抢先占住;中途出错的数据报不学,但出错段之前的段仍会投递。只在拿不到对端实际地址(如对端在 NAT 后)时用</param>
 /// <param name="cfg">KCP 可调参数;NULL 用库默认(见 kcp_config)</param>
-/// <returns>ERR_OK 请求已发起,不代表会话已建好;ERR_FAILED 本地校验失败或未能发起,sess / maxpack 不变。
+/// <returns>ERR_OK 请求已发起,不代表会话已建好;ERR_FAILED 本地校验失败(ip 非法、ip 与 socket 不同族且不是
+///   通配学习模式)或未能发起,sess / maxpack 不变。
 ///   句柄 stopped 为 0 时先隐式 kcp_stop 旧会话再起新的,失败时 stopped 保持被它置的 1</returns>
 int32_t kcp_start(kcp_ctx *kcp, name_t handle, uint64_t sess,
                   const char *ip, uint16_t port, const kcp_config *cfg);

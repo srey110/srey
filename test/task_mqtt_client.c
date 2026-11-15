@@ -126,8 +126,8 @@ static void _net_recv(task_ctx *task, sock_ctx *sk,
         if (arg->prt) {
             LOG_INFO("PUBLISH<-S from server, topic=%s content=%s", vh->topic, pl->content);
         }
-        // 只有进程内 broker 会推(delay 非 0 的用例连它)，内容见 task_mqtt_server.c；对不上就不置位，PINGRESP 那步判失败
-        if (0 != arg->delay
+        // 只有进程内 broker 会推(非可选的用例连它)，内容见 task_mqtt_server.c；对不上就不置位，PINGRESP 那步判失败
+        if (!arg->optional
             && 0 == strcmp(vh->topic, "/test/topic1")
             && NULL != pl
             && strlen("server push") == (size_t)pl->lens
@@ -253,7 +253,7 @@ static void _net_recv(task_ctx *task, sock_ctx *sk,
         if (arg->prt) {
             LOG_INFO("PONG<-S");
         }
-        if (0 != arg->delay && !arg->pushed) {
+        if (!arg->optional && !arg->pushed) {
             LOG_ERROR("mqtt client %s: no valid server push before PINGRESP.", task->name);
             test_fail(arg->ok);
             break;

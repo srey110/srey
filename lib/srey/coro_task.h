@@ -16,6 +16,7 @@
 // coro_send / coro_recv / coro_slice 只收回复(要过各协议的 may_resume),对端主动发的包(如 MQTT 的 CONNECT)落到回调上,
 // 要挂起等这类包用 coro_recv_any。
 // 连接上的等待(coro_send / coro_recv / coro_sendto 等)被这条连接的 CLOSE 唤醒时，传进来的 sk 随之置失效(fd 置 INVALID_SOCK；挂起期间 sk 已换成别的连接则不动)。
+// 不支持半关：对端结束发送(FIN / close_notify)即整条连接关闭，之后的发送无效，没发出去的数据丢弃。
 // TCP 连接上的等待等满超时(连接超时或读超时)会先关掉这条连接再返回失败(UDP 的 coro_sendto 不关)；
 // 对端空闲可能超过读超时的服务端要先把读超时调大(task_set_timeout 的 TMO_NETREAD)，只影响某几次等待的用 coro_timeout_set。
 // UDP coro_sendto 同此约定:ud.sess 不会自动清零,须在首次调用 coro_sendto 前显式 coro_sync 一次,
@@ -125,13 +126,15 @@ void *coro_request(task_ctx *dst, task_ctx *src,
                    int32_t *erro, size_t *lens);
 /// <summary>
 /// 切换为SSL链接并等握手完成。明文建的连接要在 coro_connect / task_listen 时带 NETEV_AUTHSSL，握手结果才会投回来，
-/// 否则握手成了也等满读超时、连接被关；事件线程拒收这次切换(已是 SSL 连接、未连通、已在关)时同样等满超时后关
+/// 否则握手结果不会投回来：等满读超时，或对端先发数据时被当成明文，连接都会被关；事件线程拒收这次切换(已是 SSL 连接、未连通、已在关)时同样等满超时后关。
+/// 等的期间这条连接收到的数据是升级前的明文(见 ev_ssl)，框架丢掉并关连接
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="sk">连接标识</param>
-/// <param name="client">1 作为客户端 0 作为服务端</param>
+/// <param name="client">1 作为客户端 0 作为服务端，须与连接方向一致(同 ev_ssl)</param>
 /// <param name="evssl">evssl_ctx</param>
-/// <returns>ERR_OK 成功；fd 为 INVALID_SOCK 时不挂起,直接按失败返回(同 coro_recv)</returns>
+/// <returns>ERR_OK 成功；等的期间收到过升级前明文的通常返回失败(握手先一步完成时返回 ERR_OK，连接随后关掉)；
+/// fd 为 INVALID_SOCK 时不挂起,直接按失败返回(同 coro_recv)</returns>
 int32_t coro_ssl_exchange(task_ctx *task, sock_ctx *sk, int32_t client, struct evssl_ctx *evssl);
 /// <summary>
 /// 等待握手完成
@@ -183,7 +186,11 @@ int32_t coro_connect(task_ctx *task, pack_type pktype,
 int32_t coro_close(task_ctx *task, sock_ctx *sk);
 /// <summary>
 /// TCP发送并等待响应。同一连接上多个协程并发收发时，须用 coro_serial 把整个"发请求→收完响应"圈住：
-/// 等待者按连接排队、只认队头，回包按到达顺序交给先挂起的协程，而服务端不保证按请求顺序回包，不圈就会对错号
+/// 等待者按连接排队、只认队头，回包按到达顺序交给先挂起的协程，而服务端不保证按请求顺序回包，不圈就会对错号。
+/// 只收一条消息、不带分片标记：对端可能分片回包(HTTP chunked、WebSocket 分片)的，改用 ev_send + coro_slice
+/// 循环，或用带 slice 出参的 coro_recv_any，否则收到的只是首片，后续各片落到回调上或被下一次等待收走。
+/// 对端会主动推消息的连接(如 WebSocket 服务端推送)上不要用它等回复，包括发 PING 等 PONG：推来的帧同样按队头唤醒，
+/// 会和回复错配。这类连接在收包回调里处理，心跳 PING 直接 ev_send
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="sk">连接标识</param>
@@ -198,7 +205,7 @@ int32_t coro_close(task_ctx *task, sock_ctx *sk);
 void *coro_send(task_ctx *task, sock_ctx *sk, void *data, size_t len, size_t *size, int32_t copy);
 /// <summary>
 /// 同步接收下一个响应包(不发送):用于一次请求产生多个响应的场景,如 MySQL 多结果集续读。
-/// 同一连接上多协程并发的约束同 coro_send
+/// 同一连接上多协程并发的约束、不带分片标记同 coro_send
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="sk">连接标识</param>
@@ -221,7 +228,8 @@ void *coro_recv_any(task_ctx *task, sock_ctx *sk, size_t *size, uint8_t *slice);
 /// <summary>
 /// 等待分片消息。等待按 skid 排队、只认队头，而本函数每次调用都重新排到队尾——同一连接上
 /// 有其他等待者时，后续分片会被派给别人，两边各拿到半截。整趟分片循环期间调用方须保证
-/// 这条连接上没有并发的等待者
+/// 这条连接上没有并发的等待者。WebSocket 分片中途对端插进来的控制帧(PONG / CLOSE)不交给本函数，
+/// 落到回调；CLOSE 随后关连接，本函数返回 NULL
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="sk">连接标识</param>

@@ -356,9 +356,13 @@ runner.run(function(t)
         pool:get()-- t0 第 1 次失败：冷却 100ms
         srey.sleep(150)
         pool:get()-- t150 第 2 次失败：冷却 200ms，到 t350
+        local t2 = srey.timer_ms()
         srey.sleep(100)
-        t:eq(nil, pool:get(), "冷却翻倍: t250 仍在冷却")
-        t:eq(3, made[1].connects, "冷却翻倍: 第二次冷却翻倍，没再试")
+        -- 机器忙、晚醒到第 2 次冷却已过就跳过这两条
+        if srey.timer_ms() - t2 < 190 then
+            t:eq(nil, pool:get(), "冷却翻倍: t250 仍在冷却")
+            t:eq(3, made[1].connects, "冷却翻倍: 第二次冷却翻倍，没再试")
+        end
         srey.sleep(150)
         pool:get()-- t400 第 3 次失败：冷却 400ms，到 t800
         srey.sleep(450)

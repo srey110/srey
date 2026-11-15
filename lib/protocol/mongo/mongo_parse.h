@@ -23,7 +23,7 @@ int64_t mongo_cursorid(mgopack_ctx *mgpack);
 /// </summary>
 /// <param name="mgpack">服务端返回的消息包</param>
 /// <returns>成功返回 n 字段值（影响文档数 / count 的计数，没有 n 字段为 0）；失败返回 ERR_FAILED。
-/// n 与 nErrors 认 int32 / int64 / double 三种编码，非数值、负数或超出 int32 的 n 也按失败</returns>
+/// n 与 nErrors 认 int32 / int64 / double 三种编码，非数值、负数或超出 int32 的 n 也按失败；正文 BSON 中途坏掉也按失败</returns>
 int32_t mongo_parse_check_error(mgopack_ctx *mgpack);
 /// <summary>
 /// 解析 startSession 响应，提取会话 UUID 和超时时间

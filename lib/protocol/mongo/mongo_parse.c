@@ -117,7 +117,9 @@ int32_t mongo_parse_check_error(mgopack_ctx *mgpack) {
             break;
         }
     }
-    if (ok && n >= 0 && !writeerrors && !writeconcernerror && !errmsg && !nerrors) {
+    // 应答中途坏掉时后面的 writeErrors / errmsg 读不到，不能按成功算
+    if (ok && n >= 0 && !writeerrors && !writeconcernerror && !errmsg && !nerrors
+        && 0 == bson_iter_error(&iter)) {
         return n;
     }
     char *errbson = bson_tostring(&bson);

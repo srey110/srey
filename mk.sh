@@ -23,9 +23,9 @@
 #***********************************************
 # 一律在仓库根干活：后面的路径都以这里为根，在别的目录跑会删到当前目录下的同名文件
 cd "$(dirname "$0")" || exit 1
-# 路径带空白时后面不加引号的 rm -rf / mv 会被拆词，删到别的目录，直接拒绝
+# 后面不加引号的 rm -rf / mv / cd 遇到路径带空白会被拆词、带 * ? [ 会被当通配符展开，删到别的目录，直接拒绝
 case "`pwd`" in
-    *[[:space:]]*) echo "repository path must not contain whitespace: `pwd`"; exit 1 ;;
+    *[[:space:]]*|*\**|*\?*|*\[*) echo "repository path must not contain whitespace or * ? [: `pwd`"; exit 1 ;;
 esac
 # Linux 链接时加 -rdynamic：把可执行文件里的全局函数导出到动态符号表，stack_print 打出的栈才带函数名
 # (static 函数仍只有偏移，用 addr2line -e bin/srey 换)。代价是 LTO 不能再把这些函数收成内部函数，可能变慢，默认关，置 1 打开。
@@ -201,7 +201,8 @@ RSTPATH="bin"
 LIBNAME="srey"
 MAKEFILEPATH=`pwd`
 LIBPATH="-L$MAKEFILEPATH/$RSTPATH"
-if [ "$OSNAME" = "FreeBSD" ]
+# FreeBSD / OpenBSD 的系统编译器是 clang，OpenBSD 没有 gcc
+if [ "$OSNAME" = "FreeBSD" ] || [ "$OSNAME" = "OpenBSD" ]
 then
     CC="clang -std=gnu99"
     CXX="clang++"
@@ -209,8 +210,14 @@ else
     CC="gcc -std=gnu99"
     CXX="g++"
 fi
-# macOS ar 不支持 -D（确定性模式），Linux/SunOS 支持
-if [ "$OSNAME" = "Darwin" ]
+# 编译器是不是 clang(macOS 的 gcc 就是 clang)：LTO 的做法与 -Wno-unused-function 都按它定
+IS_CLANG=0
+if $CC -dM -E - </dev/null 2>/dev/null | grep -q __clang__
+then
+    IS_CLANG=1
+fi
+# D（确定性模式）是 GNU / LLVM 的扩展：macOS、Solaris / illumos、AIX 自带的 ar 不认，OpenBSD 自带的老版 ar 也未必认
+if [ "$OSNAME" = "Darwin" ] || [ "$OSNAME" = "SunOS" ] || [ "$OSNAME" = "AIX" ] || [ "$OSNAME" = "OpenBSD" ]
 then
     ARCH="ar rcs"
 else
@@ -236,13 +243,14 @@ else
     # SunOS/AIX 不启用 LTO。
     if [ "$OSNAME" != "SunOS" ] && [ "$OSNAME" != "AIX" ]
     then
-        if ! $CC -dM -E - </dev/null 2>/dev/null | grep -q __clang__ && command -v gcc-ar >/dev/null 2>&1
+        if [ $IS_CLANG -eq 0 ] && command -v gcc-ar >/dev/null 2>&1
         then
             CFLAGS=$CFLAGS" -flto=$(nproc 2>/dev/null || echo 4)"
             ARCH="gcc-ar rcsD"
         else
             CFLAGS=$CFLAGS" -flto"
-            if [ "$OSNAME" = "FreeBSD" ] && command -v llvm-ar >/dev/null 2>&1
+            # FreeBSD / OpenBSD 自带的 ar 给 clang 的 LTO 目标建不出符号索引，装了 llvm-ar 就用它
+            if { [ "$OSNAME" = "FreeBSD" ] || [ "$OSNAME" = "OpenBSD" ]; } && command -v llvm-ar >/dev/null 2>&1
             then
                 ARCH="llvm-ar rcsD"
             fi
@@ -287,8 +295,8 @@ then
     fi
 fi
 # clang 会把 .c 里没用到的 static inline 也算 unused-function,而 XXX_DECL 一次就生成整套
-# 接口,调用方总只用其中几个。gcc 对 static inline 从不报,故 Linux 那边仍然拦得住真正的死函数
-if [ "$OSNAME" = "Darwin" ] || [ "$OSNAME" = "FreeBSD" ]
+# 接口,调用方总只用其中几个。gcc 对 static inline 从不报,故 gcc 编译时仍然拦得住真正的死函数。按编译器判,不按平台
+if [ $IS_CLANG -eq 1 ]
 then
     CFLAGS=$CFLAGS" -Wno-unused-function"
 fi

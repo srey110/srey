@@ -115,7 +115,11 @@ runner.run(function(t)
         end)
     end
 
-    srey.sleep(200)
+    -- 有界轮询等连上与 accept 到齐，每 50ms 查一次最多 2s
+    for _ = 1, 40 do
+        if #cli_sks >= N and accepted >= N then break end
+        srey.sleep(50)
+    end
     t:eq(N, #cli_sks, "全部 N 个 client coro_connect 成功")
     t:eq(N, accepted, "全部 N 个 client 已 accept")
     t:eq(0, peer_bad, "on_accepted 的 addr 经 remote_addr 转出 127.0.0.1 与 client 端口")
@@ -158,7 +162,17 @@ runner.run(function(t)
     end
     srey.unlisten(lid)
 
-    srey.sleep(200)
+    -- 有界轮询等两条转发路径的 CLOSE 都到齐，每 50ms 查一次最多 2s
+    for _ = 1, 40 do
+        srey.sleep(50)
+        local nboth = 0
+        for i = 1, #cli_sks do
+            if nil ~= seen_cb[cli_sks[i].skid] and nil ~= seen[cli_sks[i].skid] then
+                nboth = nboth + 1
+            end
+        end
+        if nboth >= #cli_sks then break end
+    end
     local nseen, nlocal, ncb, nsess = 0, 0, 0, 0
     local skid
     for i = 1, #cli_sks do

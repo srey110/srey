@@ -7,7 +7,10 @@
 -- 对端失联(某段重传到 dead_link 次,库默认 20)时 C 层拆掉会话并推 MSG_TYPE.CLOSE(erro 为 CLOSE_TYPE.ABORT):被它唤醒的
 -- sync send 已经 stop,可直接重新 start;sync 模式当时没有 send 在等的须先 stop 再 start;异步模式可直接 start。
 -- 未确认的段到 C 层 KCP_SENDQ_MAX 时会话同样被拆除,MSG_TYPE.CLOSE 的 erro 为 CLOSE_TYPE.LOCAL。
--- socket 用 srey.udp(PACK_TYPE.UDP_KCP) 创建,数据接收复用 srey.on_recvedfrom。
+-- sync 模式空闲时被拆(死链、积压超限、socket 关闭)对象并不知道:下次 send 照发,等满读超时才返回 nil;
+-- 要立即知道就订 srey.on_closed,按 sess 认出是自己的会话后 stop,之后 send 当场返回 nil。
+-- 对象被回收(__gc)时会话随之拆除:异步模式 start 后同样须一直持有 k 到会话结束,只放在局部变量里会在某次 GC 时被静默拆掉。
+-- socket 用 srey.udp(PACK_TYPE.UDP_KCP) 创建,数据接收复用 srey.on_recvedfrom:第 6 参 sess 等于 k.sess,同一 socket 上多个会话靠它分。
 -- 使用方:local kcp = require("lib.kcp"); local k = kcp.new(sk, conv); k:start(ip, port)
 --        kcp.new 的第 3 参数是 sync(boolean),传 true 则 start/send 同步等响应;缺省只走异步。
 --        注意 Lua 中 0 为真值,旧写法 kcp.new(sk, conv, 0) 会被当成 sync=true
@@ -43,6 +46,7 @@ end
 ---建立会话:数据到达以当前 task 为推送目标;异步模式发起后立即返回,sync 时等 event 线程建好(或因 conv 冲突失败)。
 ---每次调用都生成新 sess 记进 k.sess,故 stop 后重启不会被上一会话在途的 CLOSE 击穿。
 ---sync 模式存活期间重复调用直接返回 false,须先 stop;异步模式重复调用由 C 侧先停旧会话(投出旧 sess 的 CLOSE)再起新的。
+---异步模式发起后同样须持有本对象到会话结束,被回收时会话随之拆除(见文件头)。
 ---port 为 0 时进学习模式:首个被 ikcp 整包收下的数据报来源定为对端,ip 为 "0.0.0.0" / "::" 时 ip 也学,之后严格校验;
 ---学到之前本端发出的段被丢掉(靠重传补上,应让对端先发),这期间猜中 conv 的任何来源都能抢先占住,细则见 C 层 kcp_start
 ---@param ip string 对端 IP

@@ -21,13 +21,14 @@ typedef struct mgopack_ctx {
 
 typedef struct mongo_session {
     int32_t timeoutmin; //会话超时时间（分钟）
-    int32_t txnnumber;  //事务序号
     int32_t started;    //本次事务的首个操作是否已发出（决定是否附带 startTransaction）
     int32_t committing; //本次事务的 commitTransaction 已交给连着的连接：之后连接换过也不算作废，只许重发提交
     int32_t unacked;    //本次事务发过只发不等(MORETOCOME)的写：它到没到服务端无从知道，提交不许跨重连重发
+    int64_t txnnumber;  //事务序号，与线上的 txnNumber 同为 64 位
     size_t optionslens; //options 字节数（bson_cat 要求随指针给出缓冲长度；options 为 NULL 时该值无意义）
     uint64_t timeout;   //会话超时时刻（秒）；0 = 服务端没给出 timeoutmin，超时未知
     uint64_t skid;      //begin 时连接的 skid；与连接当前的不同即本次事务已随重连作废
+    uint64_t bindid;    //begin 时取的全局唯一号，认"还是不是那一次 begin"，见 mongo_txn_mark
     struct mongo_ctx *mongo; //所属连接上下文
     char *options;      //事务选项 BSON 数据（含 lsid/txnNumber/autocommit）
     char uuid[UUID_LENS]; //会话 UUID

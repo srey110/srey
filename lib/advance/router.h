@@ -134,6 +134,8 @@
 //   协程 task (coro_task_register): _net_recv 已在协程栈, router_dispatch 及栈上
 //   的 ctx 跨 yield 保留, handler 可直接 coro_request / coro_fork_wait, 返回前再用
 //   ctx 写响应 (见 lib/advance/harbor.c、lib/advance/debug_console.c)。
+//   不支持流水线: 同一连接上的请求各自处理、不保证按序回包 (handler 挂起或异步回包时后到的
+//   可能先回), 客户端须等上一条响应再发下一条 (同 coro_send 的契约)。
 // 错误响应
 //   URL 解析失败      → 400 Bad Request (段数超 URL_MAX_PATH_DEPTH / URI 超长 /
 //                       请求目标既不以 '/' 开头也不是 http://host/... 这种绝对形式)

@@ -14,7 +14,7 @@
 /// <returns>请求包数据，调用方负责释放</returns>
 void *mysql_pack_quit(size_t *size);
 /// <summary>
-/// 构造 COM_INIT_DB 请求包（切换数据库）
+/// 构造 COM_INIT_DB 请求包（切换数据库）。收到 OK 后须 mysql_record 才记进连接的库名(重连握手用它)
 /// </summary>
 /// <param name="mysql">mysql_ctx</param>
 /// <param name="database">目标数据库名</param>

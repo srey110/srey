@@ -949,6 +949,9 @@ void _uev_add_bufs_send(watcher_ctx *watcher, evsock_ctx *evsk, off_buf_ctx *buf
 static void _usk_on_connect_cb_err(watcher_ctx *watcher, tcp_ctx *tcp) {
     // 连接作废：回调里的 ev_send / ev_ssl 按未连通拒收(否则会挂上攒发链随对象一起被回收)，关闭也不进延迟关闭
     BIT_REMOVE(tcp->status, STATUS_ESTABLISHED);
+    // 连接失败后没有 close_cb(见 evpub.h 的回调约定)：回调里关、重挂又失败时会走 _usk_close_tcp，先摘掉。
+    // cbs 是本连接的拷贝，回池再取出时重新拷
+    tcp->cbs.c_cb = NULL;
     // 回调里已把它关了：摘除与回收都由关闭路径做过，再做一遍就是重复回收
     if (1 == _usk_call_conn_cb(watcher, tcp, ERR_FAILED)) {
         return;
@@ -1131,37 +1134,53 @@ static int32_t _usk_accept_retriable(int32_t err) {
     }
 }
 // accept 返回 INVALID_SOCK 的分类：可重试错误返回 ERR_OK 继续，其余返回 ERR_FAILED 退出循环；
-// 资源耗尽(EMFILE/ENFILE/ENOBUFS/ENOMEM)额外暂停监听 READ 并挂退避 tick，到点重挂重试（不误拒 backlog，避免 ET 停滞/LT 忙轮询）
+// 资源耗尽(EMFILE/ENFILE/ENOBUFS/ENOMEM)额外暂停监听 READ 并挂退避 tick，到点重挂重试（不误拒 backlog，避免 ET 停滞/LT 忙轮询）。
+// 边缘触发下其余错误也退避：退出循环又不重挂就再没有边沿，backlog 里剩下的连接停住
 static inline int32_t _usk_check_accept(watcher_ctx *watcher, lsnsock_ctx *acpt) {
     int32_t err = ERRNO;
     if (0 != _usk_accept_retriable(err)) {
         return ERR_OK;
     }
-    if (EMFILE == err
-        || ENFILE == err
-        || ENOBUFS == err
-        || ENOMEM == err) {
-        _uev_del_event(watcher, acpt->sock.sk.fd, &acpt->sock.events, EVENT_READ, &acpt->sock);
-        acpt->backoff_until = timer_cur_ms(&watcher->timer) + ACCEPT_BACKOFF_MS;
-        acpt->watcher = watcher;
-        _evpub_tick_attach(watcher, &acpt->backoff_tick, _usk_accept_backoff, acpt);
+    if (IS_EAGAIN(err)) {// 接空了，不是错误：照常退出循环，边缘触发也不退避
+        return ERR_FAILED;
     }
+#if defined(TRIGGER_LT)
+    if (EMFILE != err
+        && ENFILE != err
+        && ENOBUFS != err
+        && ENOMEM != err) {
+        return ERR_FAILED;
+    }
+#endif
+    _uev_del_event(watcher, acpt->sock.sk.fd, &acpt->sock.events, EVENT_READ, &acpt->sock);
+    acpt->backoff_until = timer_cur_ms(&watcher->timer) + ACCEPT_BACKOFF_MS;
+    acpt->watcher = watcher;
+    _evpub_tick_attach(watcher, &acpt->backoff_tick, _usk_accept_backoff, acpt);
     return ERR_FAILED;
 }
 // 监听socket可读事件回调：循环accept新连接并分发给对应watcher。
 // 末尾重挂 READ 失败时这条监听 socket 只能弃掉，没有回调能通知业务，只落 ERROR 日志；清 ev_cb 的理由见 _usk_detach。
-// kqueue 报了待接连接数(kevent.data)就只 accept 这么多次，省掉最后那次必然 EAGAIN 的；之后新到的留给下次事件
+// 水平触发下每轮最多接 ACCEPT_ROUND_MAX 条，没接完的下一轮照样报；kqueue 报了待接连接数(kevent.data)且更少时只接这么多，
+// 省掉最后那次必然 EAGAIN 的。边缘触发停手就再没有边沿，照旧接到 EAGAIN
 static void _usk_on_accept_cb(watcher_ctx *watcher, evsock_ctx *evsk, int32_t ev) {
     (void)ev;
     lsnsock_ctx *acpt = UPCAST(evsk, lsnsock_ctx, sock);
     SOCKET fd;
     watcher_ctx *to;
     int32_t unremove;
+#if defined(TRIGGER_LT)
+    intptr_t npend = ACCEPT_ROUND_MAX;
 #if defined(EV_KQUEUE)
-    intptr_t npend = watcher->evdata > 0 ? watcher->evdata : -1;
+    if (watcher->evdata < 0) {
+        npend = -1;// 监听丢了 knote：退出监听前接到 EAGAIN 为止(见 uev.c)
+    } else if (watcher->evdata > 0
+               && watcher->evdata < npend) {
+        npend = watcher->evdata;
+    }
+#endif
 #endif
     while ((unremove = (0 == ATOMIC_GET(&acpt->lsn->remove)))) {
-#if defined(EV_KQUEUE)
+#if defined(TRIGGER_LT)
         if (0 == npend--) {
             break;
         }
@@ -1443,6 +1462,14 @@ void _uev_remove_lsn(watcher_ctx *watcher, listener_ctx *lsn) {
     // ref 归零入隔离队列：隔离期内 lsnsock 数组还在，各线程本批 events[] 里残留的项还要读它的 ev_cb
     _uev_qtn_freelsn(watcher, lsn);
 }
+#if defined(EV_KQUEUE)
+void _uev_lsn_lost(watcher_ctx *watcher, evsock_ctx *evsk) {
+    // 刚才派发的 accept 可能因资源耗尽挂了退避 tick 并排了 EV_DELETE，关 fd 前都得撤。
+    // 关后 fd 为 INVALID_SOCK，_uev_remove_lsn / _uev_freelsn 都跳过它
+    _evpub_tick_detach(watcher, &UPCAST(evsk, lsnsock_ctx, sock)->backoff_tick);
+    _usk_detach(watcher, evsk);
+}
+#endif
 // 初始化msghdr结构体（用于recvmsg/sendmsg的地址和iov绑定）
 static inline void _usk_init_msghdr(struct msghdr *msg, netaddr_ctx *addr, IOV_TYPE *iov, uint32_t niov) {
     ZERO(msg, sizeof(struct msghdr));

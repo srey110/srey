@@ -864,7 +864,8 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     task_timeout(task, 0, 1000, _timeout);
 }
 static void _startup(task_ctx *task) {
-    task_timeout(task, 0, 100, _timeout);
+    // 首轮多等一会：各 server 的 startup 由 worker 择时派发、与注册顺序无关，同 mqtt_test3/4
+    task_timeout(task, 0, 500, _timeout);
 }
 void task_timeout_start(loader_ctx *loader, const char *name,
     const char *rpcname, name_val_ctx *ports, void *evssl, void *hbssl,

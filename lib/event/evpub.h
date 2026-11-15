@@ -20,6 +20,7 @@
 #define WB_WARN_INIT_SIZE   (1024 * 1024) // 单 sock 发送缓冲字节告警首阈值；触发后翻倍（1MB→2MB→4MB...），队列清空后复位；0 表示禁用
 #define EVENT_TICK_MIN       10// event 线程周期驱动(ev_tick)的最小间隔(毫秒),防 tick 返回 0 忙轮询
 #define ACCEPT_BACKOFF_MS    500// accept 遇资源耗尽(EMFILE / ENFILE / ENOBUFS / ENOMEM)后暂停监听、退避重试的间隔(毫秒)
+#define ACCEPT_ROUND_MAX     16// 水平触发下监听 socket 每轮最多 accept 几条，没接完的下一轮再报；积压多时不让同线程别的连接干等。须 > 0
 #define UDP_RECV_MAX_ERRS    3// 单次唤醒内 recvmsg 连续失败上限；超限认定 fd 异常转关闭，防不消耗 datagram 的错误原地打转
 #define CLOSE_LINGER_MS      3000// 本端主动关闭后继续读掉对端数据的最长时间(毫秒，机制见 STATUS_LINGER)；0 表示不延迟关闭
 #define CLOSE_LINGER_BYTES   (1024 * 1024)// 延迟关闭期间最多读掉的字节数，超过就直接关 fd；它不是开关，取 0 即对端再发一个字节就关
@@ -72,11 +73,11 @@
 // socket 状态标志位
 typedef enum sock_status {
     STATUS_NONE = 0,            // 无状态
-    // 正在发送数据。IOCP 指 WSASend 在途(跨完成回调)，攒发链同步发送期间(含 s_cb)也置位；
+    // 正在发送数据。IOCP 指 ol_s 上有在途 IO(WSASend 或等可写的 AFD 轮询，跨完成回调)，攒发链同步发送期间(含 s_cb)也置位；
     // uev 只覆盖 s_cb 执行期。同步发送期间置位都是为了挡回调里的同步重入
     STATUS_SENDING = 1 << 0,
     STATUS_ERROR = 1 << 1,      // 发生错误
-    // 待移除，关闭要等手上的事做完：IOCP 等在途的 WSASend(TCP) / WSASendTo(UDP) 完成，Unix 等 STATUS_INCB 的回调返回，
+    // 待移除，关闭要等手上的事做完：IOCP 等 ol_s 上在途的 IO(TCP 的 WSASend 或 AFD 轮询) / WSASendTo(UDP) 完成，Unix 等 STATUS_INCB 的回调返回，
     // 或(UDP)等本轮 tick 全部跑完
     STATUS_REMOVE = 1 << 2,
     // 仅 Unix：本连接的某个回调(acp / conn / exch / r / s)正在执行。期间要关它(同线程发送失败、ev_close
@@ -106,13 +107,13 @@ typedef enum sock_status {
     STATUS_SSLEXCHANGE = 1 << 12,     // 是否切换成SSL链接，发送队列为空时移除该标识，并开始SSL握手
     STATUS_AUTHSSL = 1 << 13,         // SSL握手中
 #ifdef EV_IOCP
-    STATUS_NORECV = 1 << 14,          // 仅 IOCP：KeyUpdate 探针期暂停收(ol_r 未重投 WSARecv)
+    STATUS_NORECV = 1 << 14,          // 仅 IOCP：KeyUpdate 或挂起写等可写期间暂停收(ol_r 未重投 WSARecv)
 #endif
     // 下面三个是数据期 TLS1.3 的读写互卡。前两个的后缀表示"在等哪一边就绪"，
     // 第三个表示"我这边还有没发完的应用写"。后两个互斥，由 _usk_tcp_send /
     // _olp_tcp_send 单点保证；KEYUPDATE_WRITE 可与 KEYUPDATE_READ 共存，它与
     // WPEND_SSL 不共存在 Unix 上靠的是 _usk_tcp_send 入口那道 !KEYUPDATE_WRITE 守卫，别删
-    STATUS_KEYUPDATE_WRITE = 1 << 15, // 读的时候 SSL 说要先写：Unix 注册 EVENT_WRITE 并摘 EVENT_READ，IOCP 投 0 字节 WSASend 探针并暂停收
+    STATUS_KEYUPDATE_WRITE = 1 << 15, // 读的时候 SSL 说要先写：Unix 注册 EVENT_WRITE 并摘 EVENT_READ，IOCP 投 AFD 轮询等可写并暂停收
     STATUS_KEYUPDATE_READ = 1 << 16,  // 发的时候 SSL 说要先读到对端数据，挂着等读就绪再重试发送：
                                       // Unix 摘掉 EVENT_WRITE 只留 EVENT_READ，IOCP 交还 SENDING 不投探针。
                                       // 置位来自对端把 post-handshake 消息(现实中是 NewSessionTicket)
@@ -187,6 +188,7 @@ typedef struct ev_ctx {
 // 回调函数类型定义
 // accept_cb/connect_cb 返回失败则自动关闭链接，并触发close_cb回调。
 // 连接失败(connect_cb 的 err 非 ERR_OK)时 connect_cb 只调这一次，返回值不看，之后也没有 close_cb
+// 不支持半关：对端结束发送(FIN / close_notify)即整条连接关闭，发送队列里没发出去的数据丢弃，之后的 ev_send 无效
 // 启用 ssl 握手未完成前（ssl_exchanged_cb）不能调用发送，否则会关闭链接
 // ssl_exchanged_cb 返回失败则自动关闭链接
 typedef int32_t(*accept_cb)(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud);// 接受新连接回调

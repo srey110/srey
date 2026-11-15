@@ -1,7 +1,7 @@
 -- Redis 客户端工具库。
 -- 提供：连接（含 AUTH）、RESP 协议序列化（pack / pack_ud）、
 -- 以及完整的 RESP3 多节点响应解包（unpack，整段在 C 绑定层做）。
--- 错误应答（-ERR / !）与字符串值分得开：顶层是 (false, 错误文本)，聚合里的错误元素是 { err = 错误文本 }。
+-- 错误应答（-ERR / !）与字符串值分得开：顶层（含 attr 之后的）是 (false, 错误文本)，聚合里的错误元素是 { err = 错误文本 }。
 
 local srey       = require("lib.srey")
 local srey_redis = require("srey.redis")

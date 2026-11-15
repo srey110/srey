@@ -19,7 +19,7 @@ enum { LEARN_A, LEARN_B, LEARN_E, LEARN_NSK };
 
 // ================= server =================
 typedef struct kcp_sv_sess {
-    uint16_t cport;     // client UDP 端口(会话 key,echo 时按来源端口匹配)
+    int32_t  hs;        // 握手回调已按本会话的 sess 交来成功结果；没交来就不回显
     kcp_ctx  kcp;       // server 侧该 client 的 kcp 会话句柄
 }kcp_sv_sess;
 
@@ -43,7 +43,7 @@ static void _sv_net_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t
     memcpy(&cport, data, sizeof(cport));
     uint32_t conv = ++_sv_conv_seq;
     kcp_sv_sess *s = &_sv_sess[_sv_nsess];
-    s->cport = cport;
+    s->hs = 0;
     kcp_init(&s->kcp, &task->loader->netev, &_sv_udp_sk, conv);
     if (ERR_OK != kcp_start(&s->kcp, _sv_handle, createid(), "127.0.0.1", cport, NULL)) {
         LOG_ERROR("kcp server kcp_start conv %u error.", conv);
@@ -55,8 +55,10 @@ static void _sv_net_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t
     memcpy(out, &conv, sizeof(conv));
     ev_send(&task->loader->netev, sk, out, sizeof(conv), 0);
 }
-// UDP 侧 kcp 数据:按来源端口找到会话,原样 echo 回该 client
-static void _sv_net_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype, const netaddr_ctx *addr, void *data, size_t size) {
+// UDP 侧 kcp 数据:按回调交出的 sess 找到会话(同一 socket 上有多个会话),原样 echo 回该 client。
+// sess 没交出来就找不到会话、不回显，客户端那边等不到 echo 即失败
+static void _sv_net_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype, const netaddr_ctx *addr, void *data, size_t size,
+                             uint64_t sess) {
     (void)task;
     (void)sk;
     (void)pktype;
@@ -64,14 +66,29 @@ static void _sv_net_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype, con
     if (size >= sizeof(KCP_NOECHO) - 1 && 0 == memcmp(data, KCP_NOECHO, sizeof(KCP_NOECHO) - 1)) {
         return;// 单向:client 只能靠 server 收包唤醒后的 flush 拿到 ACK
     }
-    uint16_t port = netaddr_port(addr);
     for (i = 0; i < _sv_nsess; i++) {
-        if (_sv_sess[i].cport == port) {
+        if (_sv_sess[i].kcp.sess == sess) {
+            if (!_sv_sess[i].hs) {// 建会话的结果没按 sess 交来，客户端等不到 echo 即失败
+                LOG_ERROR("kcp server: sess %"PRIu64" got data before its handshake result.", sess);
+                return;
+            }
             kcp_send(&_sv_sess[i].kcp, data, size, 1);
             return;
         }
     }
-    LOG_WARN("kcp server: no session for client port %u.", port);
+    LOG_WARN("kcp server: no session for sess %"PRIu64" (client port %u).", sess, netaddr_port(addr));
+}
+// 异步建会话的结果：按回调交出的 sess 认会话(同 RECVFROM)，先于该会话的数据到
+static void _sv_net_handshaked(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client,
+                               int32_t erro, void *data, size_t lens, uint64_t sess) {
+    (void)task; (void)sk; (void)pktype; (void)client; (void)data; (void)lens;
+    for (int32_t i = 0; i < _sv_nsess; i++) {
+        if (_sv_sess[i].kcp.sess == sess) {
+            _sv_sess[i].hs = (ERR_OK == erro);
+            return;
+        }
+    }
+    LOG_ERROR("kcp server: handshake result for unknown sess %"PRIu64".", sess);
 }
 static void _sv_startup(task_ctx *task) {
     _sv_handle = task->handle;
@@ -79,6 +96,7 @@ static void _sv_startup(task_ctx *task) {
     _sv_nsess = 0;
     task_recved(task, _sv_net_recv);
     task_recvedfrom(task, _sv_net_recvfrom);
+    task_handshaked(task, _sv_net_handshaked);
     uint64_t lid;
     if (ERR_OK != task_listen(task, PACK_NONE, NULL, "0.0.0.0", _sv_tcp_port, &lid, 0)) {
         LOG_ERROR("kcp server tcp listen %u error.", _sv_tcp_port);
@@ -458,6 +476,10 @@ static void _syn_startup_run(task_ctx *task) {
     kcp_stop(&kcp5);
     int32_t r17 = kcp_synstart(task, &kcp8, "127.0.0.1", _syn_sv_udp, NULL);
     kcp_stop(&kcp8);
+    // 对端与 socket 不同族(IPv4 socket 连 ::1)：调用方线程当场拒，不建出收发全失败的会话
+    kcp_ctx kcp9;
+    kcp_init(&kcp9, &task->loader->netev, &usk, 500);
+    int32_t r20 = kcp_start(&kcp9, task->handle, createid(), "::1", _syn_sv_udp, NULL);
     kcp_stop(&kcp3);
     ev_close(&task->loader->netev, &usk);
     // 6. CLOSE 唤醒 kcp_synsend:挂起期间 socket 被关,_kcp_udfree 逐会话补 CLOSE;
@@ -495,18 +517,19 @@ static void _syn_startup_run(task_ctx *task) {
         && ERR_OK == r8 && ERR_OK != r9 && ERR_OK == r10 && NULL == r11 && elapse11 < 1000
         && ERR_OK == r6 && ERR_OK == r7 && elapse6 < 2000
         && ERR_OK == r12 && ERR_OK == r13 && ERR_OK == r14 && ERR_OK == r15
-        && ERR_OK == r16 && ERR_OK == r17 && ERR_OK == r18 && ERR_OK == r19) {
+        && ERR_OK == r16 && ERR_OK == r17 && ERR_OK == r18 && ERR_OK == r19 && ERR_OK != r20) {
         ATOMIC_SET((atomic_t *)_syn_ok, 1);
         LOG_INFO("kcp synstart tested: normal/restart ok, collision/sess-guard rejected,"
                  " reject sets stopped and restores maxpack, CLOSE keeps sess and sets stopped,"
                  " same-handle restart implicitly stops the live session and re-registers conv,"
-                 " async handle refused by the event thread stays restartable, peer and learn cases ok.");
+                 " async handle refused by the event thread stays restartable, peer and learn cases ok,"
+                 " family mismatch rejected.");
     } else {
         LOG_ERROR("kcp synstart test failed: r1=%d r2=%d r3=%d elapse3=%"PRIu64" r4=%p r5=%d"
                   " r8=%d r9=%d r10=%d r11=%p elapse11=%"PRIu64" r6=%d r7=%d elapse6=%"PRIu64
-                  " r12=%d r13=%d r14=%d r15=%d r16=%d r17=%d r18=%d r19=%d.",
+                  " r12=%d r13=%d r14=%d r15=%d r16=%d r17=%d r18=%d r19=%d r20=%d.",
                   r1, r2, r3, elapse3, r4, r5, r8, r9, r10, r11, elapse11, r6, r7, elapse6,
-                  r12, r13, r14, r15, r16, r17, r18, r19);
+                  r12, r13, r14, r15, r16, r17, r18, r19, r20);
     }
 }
 // 失败出口直接 return、槽停在初值：跑完没置 1 的记成已失败，汇总不必等满超时
@@ -578,21 +601,25 @@ static int32_t _peer_bit(const void *data, size_t size) {
     }
     return 1 << 30;
 }
-static void _peer_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype, const netaddr_ctx *addr, void *data, size_t size) {
+static void _peer_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype, const netaddr_ctx *addr, void *data, size_t size,
+                           uint64_t sess) {
     (void)task;
     (void)pktype;
     (void)addr;
+    (void)sess;
     if (sk->skid == _peer_bsk.skid) {
         kcp_send(&_peer_kb, data, size, 1);// b 上原样回显
         return;
     }
     ATOMIC_ADD(&_peer_self, _peer_bit(data, size));
 }
-static void _peer_sink_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype, const netaddr_ctx *addr, void *data, size_t size) {
+static void _peer_sink_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype, const netaddr_ctx *addr, void *data, size_t size,
+                                uint64_t sess) {
     (void)task;
     (void)sk;
     (void)pktype;
     (void)addr;
+    (void)sess;
     ATOMIC_ADD(&_peer_sink, _peer_bit(data, size));
 }
 // 手拼一个 PUSH 段(24 字节头 + 数据,小端,字段顺序同 ikcp 的段编码),从 sk 发到本机 port
@@ -829,10 +856,12 @@ static sock_ctx _learn_ask;
 static kcp_ctx _learn_ka;// a 上的学习会话,收到即回显
 static atomic_t _learn_hits;// a 上收到的消息数
 
-static void _learn_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype, const netaddr_ctx *addr, void *data, size_t size) {
+static void _learn_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype, const netaddr_ctx *addr, void *data, size_t size,
+                            uint64_t sess) {
     (void)task;
     (void)pktype;
     (void)addr;
+    (void)sess;
     if (sk->skid != _learn_ask.skid) {
         return;
     }
@@ -910,10 +939,12 @@ static int32_t _sendq_closed;// 积压超限的会话收到过 CLOSE(erro 为 CL
 static uint64_t _sendq_sess;
 
 // 只在 b 上回显:a 上没人等的回显(conv 2 的第二条)也会落到这里,弹回去就来回打乒乓
-static void _dead_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype, const netaddr_ctx *addr, void *data, size_t size) {
+static void _dead_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype, const netaddr_ctx *addr, void *data, size_t size,
+                           uint64_t sess) {
     (void)task;
     (void)pktype;
     (void)addr;
+    (void)sess;
     if (sk->skid != _dead_bsk.skid) {
         return;
     }

@@ -25,6 +25,14 @@ typedef struct moved_arg {
     int32_t reconn; // 占锁那个协程重连的结果
     int32_t insert; // 排队那条事务写的结果
 }moved_arg;
+// 事务收尾与排队中的命令交错用：一个子协程占锁，另两个依次排在它后面，各自回带结果
+typedef struct qend_arg {
+    task_ctx *task;
+    mongo_ctx *mongo;
+    mongo_session *sess; // freesession 那个子协程释放后置 NULL
+    int32_t first;       // 排在前面那个的结果(rollback / commit)
+    int32_t second;      // 排在后面那条事务写的结果
+}qend_arg;
 
 static int32_t _count_id(mongo_ctx *mongo, int32_t id);
 
@@ -764,6 +772,93 @@ done:
     return rtn;
 }
 
+// 先起：占住连接的锁睡一会儿，让后起的两个依次排上队
+static void _qend_hold_fork(void *owner, void *arg) {
+    (void)owner;
+    qend_arg *qa = (qend_arg *)arg;
+    coro_serial_ctx *held = qa->mongo->serial;
+    if (ERR_OK != coro_serial_enter(held)) {
+        return;
+    }
+    coro_sleep(qa->task, 50);
+    coro_serial_leave(held);
+}
+static void _qend_rollback_fork(void *owner, void *arg) {
+    (void)owner;
+    qend_arg *qa = (qend_arg *)arg;
+    qa->first = mongo_rollback(qa->sess, NULL, 0);
+}
+static void _qend_insert_fork(void *owner, void *arg) {
+    (void)owner;
+    qend_arg *qa = (qend_arg *)arg;
+    qa->second = _insert_id(qa->mongo, 800, "txn-queued-behind-rollback");
+}
+static void _qend_commit_fork(void *owner, void *arg) {
+    (void)owner;
+    qend_arg *qa = (qend_arg *)arg;
+    qa->first = mongo_commit(qa->sess, NULL, 0);
+}
+static void _qend_free_fork(void *owner, void *arg) {
+    (void)owner;
+    qend_arg *qa = (qend_arg *)arg;
+    mongo_freesession(qa->sess);
+    qa->sess = NULL;
+}
+// 收尾排在前、同一事务的命令排在后(第三个协程占着锁)。
+// 1：rollback 排队时事务还是空的，事务首条写组包后排在它后面。rollback 先跑，首条写拿到锁时事务已收尾，
+//    不能再带着 startTransaction 发出去(会在服务端开出没人收尾的事务)，按失败返回。
+// 2：commit 排在 freesession 前面：照常提交，freesession 等它收尾后才解绑、发 endSessions。需要副本集(同 _txn_flow)
+static int32_t _txn_queued_end_flow(task_ctx *task, mongo_ctx *mongo) {
+    mongo_session *sess = mongo_startsession(mongo);
+    if (NULL == sess) {
+        LOG_ERROR("mongo startsession(queued end) error.");
+        return ERR_FAILED;
+    }
+    int32_t rtn = ERR_FAILED;
+    mongo_collection(mongo, "srey_test_qend");
+    mongo_drop(mongo, NULL, 0);// 集合本就可能不存在，返回值不判
+    qend_arg qa = { task, mongo, sess, ERR_FAILED, ERR_FAILED };
+    coro_fn rbfns[3] = { _qend_hold_fork, _qend_rollback_fork, _qend_insert_fork };
+    coro_fn cmfns[3] = { _qend_hold_fork, _qend_commit_fork, _qend_free_fork };
+    void *args[3] = { &qa, &qa, &qa };
+    if (ERR_OK != mongo_begin(sess)
+        || ERR_OK != coro_fork_wait(coro_task_co(task), rbfns, args, 3)) {
+        LOG_ERROR("mongo queued end 1: begin / fork error.");
+        goto done;
+    }
+    if (qa.second >= 0) {// rollback 的结果不判：服务端没见过这个事务，回 NoSuchTransaction
+        LOG_ERROR("mongo queued end 1: first txn write queued behind rollback must not be sent, got %d.", qa.second);
+        goto done;
+    }
+    if (NULL != mongo->session) {
+        LOG_ERROR("mongo queued end 1: rollback did not unbind.");
+        goto done;
+    }
+    qa.first = ERR_FAILED;
+    if (ERR_OK != mongo_begin(sess)
+        || 1 != _insert_id(mongo, 801, "txn-commit-before-free")
+        || ERR_OK != coro_fork_wait(coro_task_co(task), cmfns, args, 3)) {
+        LOG_ERROR("mongo queued end 2: begin / insert / fork error.");
+        goto done;
+    }
+    if (ERR_OK != qa.first) {
+        LOG_ERROR("mongo queued end 2: commit queued before freesession must succeed.");
+        goto done;
+    }
+    if (0 != _count_id(mongo, 800)
+        || 1 != _count_id(mongo, 801)) {
+        LOG_ERROR("mongo queued end: visibility mismatch (800 absent, 801 present).");
+        goto done;
+    }
+    rtn = ERR_OK;
+done:
+    if (NULL != qa.sess) {
+        mongo_freesession(qa.sess);
+    }
+    mongo_drop(mongo, NULL, 0);// 收尾删掉，不留残留集合
+    return rtn;
+}
+
 // 提交能否跨重连重发。A：提交前连接就断了(同前一条写没等到应答)，组包时不记"已交出"，重连后按作废改发 abort、
 // 那条不可见；B：连着时交出、没到服务端就断(组好包后丢掉来模拟)，重连后按同一 lsid / txnNumber 重发，
 // 服务端提交，事务里那条可见、重连后被拒那条不可见。用单独的集合，需要副本集(同 _txn_flow)
@@ -1003,6 +1098,19 @@ static int32_t _pool_flow(task_ctx *task, task_mongo_args *arg) {
         }
         goto out;
     }
+    // 借用者置了 MORETOCOME 没清就归还：池的 reset 清掉，再借到的连接上写命令照常等应答
+    mongo_set_flag(got, MORETOCOME);
+    db_pool_put(pool, got);
+    got = mongo_pool_get(pool, 2000, &grtn);
+    if (NULL == got
+        || 0 != mongo_check_flag(got, MORETOCOME)) {
+        LOG_ERROR("mongo pool: get %d after MORETOCOME left set, flag not cleared.", grtn);
+        if (NULL != got) {
+            mongo_clear_flag(got);
+            db_pool_put(pool, got);
+        }
+        goto out;
+    }
     // 借用者 begin 后没收尾就归还：池的 reset 回滚解绑，再借到的连接上没有上一个人的事务。空事务回滚纯本地，不需要 replica set
     mongo_session *sess = mongo_startsession(got);
     if (NULL == sess
@@ -1058,6 +1166,29 @@ static int32_t _pool_flow(task_ctx *task, task_mongo_args *arg) {
     if (0 != _count_id(got, 500)) {
         LOG_ERROR("%s", "mongo pool: write in the aborted txn is visible.");
         db_pool_put(pool, got);
+        goto out;
+    }
+    // 借出期间连接断了再归还：池不调 reset 而走 quit，flags 照样清掉，再借时重连(放最后：上面查过 connects 为 1)
+    mongo_set_flag(got, MORETOCOME);
+    ev_close(&task->loader->netev, &got->sk);
+    for (int32_t i = 0; i < 150 && !sock_is_invalid(&got->sk); i++) {// 等 CLOSE 处理完(最多约 3 秒)
+        coro_sleep(task, 20);
+    }
+    if (!sock_is_invalid(&got->sk)) {// 还没关掉就归还走的是 reset，quit 那支测不到
+        LOG_ERROR("%s", "mongo pool: CLOSE not handled in time, quit path not exercised.");
+        db_pool_put(pool, got);
+        goto out;
+    }
+    db_pool_put(pool, got);
+    got = mongo_pool_get(pool, 2000, &grtn);
+    if (NULL == got
+        || 0 != mongo_check_flag(got, MORETOCOME)
+        || ERR_OK != mongo_ping(got)) {
+        LOG_ERROR("mongo pool: get %d after closed with MORETOCOME set, flag left or reconnect failed.", grtn);
+        if (NULL != got) {
+            mongo_clear_flag(got);
+            db_pool_put(pool, got);
+        }
         goto out;
     }
     db_pool_put(pool, got);
@@ -1172,6 +1303,11 @@ static void _startup_run(task_ctx *task) {
     }
     if (task_isclosing(task)
         || ERR_OK != _txn_moved_flow(task, &arg->mongo)) {
+        ev_close(&task->loader->netev, &arg->mongo.sk);
+        return;
+    }
+    if (task_isclosing(task)
+        || ERR_OK != _txn_queued_end_flow(task, &arg->mongo)) {
         ev_close(&task->loader->netev, &arg->mongo.sk);
         return;
     }

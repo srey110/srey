@@ -6,7 +6,7 @@
 // 启动 MQTT 客户端测试任务，连接指定 broker 并走完完整消息流程：
 // CONNECT→CONNACK→PUBLISH QoS0/1/2→SUBSCRIBE→服务端推送→UNSUBSCRIBE→PING→DISCONNECT。
 // 发起连接前 *ok 置 -2，连上即置 -1，全流程成功后置 1；连不上时 optional 非 0 回 0(汇总当可选项放过)，
-// 否则写终态 -3。host 为域名时自动 DNS 解析。
+// 否则写终态 -3；非可选的连进程内 broker，PINGRESP 前须收到它的推送。host 为域名时自动 DNS 解析。
 // pt 非 0 时输出每条指令的收发日志。
 // delay 非 0 时先在本 task 协程内 coro_sleep(delay) 再连:连进程内 broker 时, 两边的 _startup
 // 都由 worker 择时派发(task_register 只是投一条 STARTUP 消息), broker 可能排在客户端之后,

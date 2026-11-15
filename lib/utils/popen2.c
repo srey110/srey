@@ -214,6 +214,15 @@ int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
     six.lpAttributeList = attrs;
     six.StartupInfo.cb = NULL == attrs ? sizeof(STARTUPINFO) : sizeof(STARTUPINFOEX);
     ctx->job = CreateJobObject(NULL, NULL);
+    // 作业句柄一关里面的进程全结束：本进程崩溃、被强杀时子进程也跟着走(popen_free 本来就先杀干净再关句柄)
+    if (NULL != ctx->job) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limit;
+        ZERO(&limit, sizeof(limit));
+        limit.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(ctx->job, JobObjectExtendedLimitInformation, &limit, sizeof(limit))) {
+            LOG_WARN("%s", ERRORSTR(ERRNO));
+        }
+    }
     // 子进程只继承白名单里的句柄，本进程别的可继承句柄（如别的线程正在起的 popen 的管道）不带过去
     BOOL created = CreateProcess(NULL,
                                  (char *)cmd,

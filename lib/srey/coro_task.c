@@ -11,6 +11,7 @@ typedef struct coro_task_ctx {
     coro_ctx *co;          // 调度器，owner 是 task 本身
     void *arg;             // 业务参数
     free_cb _arg_free;     // 业务参数释放回调
+    uint64_t ssl_drop;     // 上次因等 TLS 握手收到明文而关掉的 skid：同一批帧接连到来，只报一次、关一次
 }coro_task_ctx;
 // _coro_timeout_monitor 交给 coro_expire 的 ud：一条 TIMEOUT 消息给所有到期者复用
 typedef struct coro_task_timeout {
@@ -95,16 +96,29 @@ static void _coro_handle_miss_create(task_dispatch_arg *arg) {
     _coro_dispatch(arg, 1, 0);
 }
 // 处理数据接收消息：队头等回复(RECV)的须过协议的回复判定，等任意消息(RECV_ANY)的直接唤醒；
+// 队头在等 TLS 握手结果的，这条是升级前的明文(握手结果先于 TLS 内的数据投来)，丢掉并关连接；
 // 都不中(含 sess==0)则新建协程
 static void _coro_handle_recved(task_dispatch_arg *arg) {
     coro_ctx *co = _coro_co(arg->task);
     message_ctx *msg = arg->msg;
-    if (0 != msg->sess
-        && ((ERR_OK == prots_may_resume(msg->subtype, msg->data)
+    if (0 != msg->sess) {
+        if ((ERR_OK == prots_may_resume(msg->subtype, msg->data)
              && ERR_OK == coro_wake(co, msg->sess, (int32_t)MSG_TYPE_RECV, msg))
-            || ERR_OK == coro_wake(co, msg->sess, CORO_TAG_RECV_ANY, msg))) {
-        message_clean(msg);
-        return;
+            || ERR_OK == coro_wake(co, msg->sess, CORO_TAG_RECV_ANY, msg)) {
+            message_clean(msg);
+            return;
+        }
+        if (coro_waiting(co, msg->sess, (int32_t)MSG_TYPE_SSLEXCHANGED)) {
+            coro_task_ctx *ctx = arg->task->arg;
+            if (ctx->ssl_drop != msg->sk.skid) {
+                ctx->ssl_drop = msg->sk.skid;
+                LOG_WARN("task %s, data received while waiting ssl exchange (plaintext, or AUTHSSL not set), close skid %"PRIu64".",
+                         _NAME_OR(arg->task->name), msg->sk.skid);
+                ev_close(&arg->task->loader->netev, &msg->sk);
+            }
+            message_clean(msg);
+            return;
+        }
     }
     coro_spawn(co, msg);
 }

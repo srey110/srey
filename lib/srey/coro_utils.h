@@ -34,7 +34,8 @@ struct dns_ip *dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, int3
 /// websocket链接
 /// </summary>
 /// <param name="task">task_ctx</param>
-/// <param name="evssl">evssl_ctx</param>
+/// <param name="evssl">evssl_ctx，wss 时非 NULL。URL 里的主机名只进 Host 头：SNI 与证书主机名比对只按这个上下文上
+///   evssl_host 设的名字，连哪个主机就给上下文设同名 host(一个上下文只存一个名字，一个主机一个上下文)</param>
 /// <param name="ws">ws://host:port</param>
 /// <param name="secprot">Sec-WebSocket-Protocol。协商到 "mqtt" 时本函数只完成 WS 握手，
 /// 客户端方向的 mqtt_ctx 须由调用方在返回后经 mqtt_ws_bind 注入，约束见 prots_wrap.h</param>
@@ -84,7 +85,7 @@ int32_t mysql_selectdb(mysql_ctx *mysql, const char *database);
 int32_t mysql_ping(mysql_ctx *mysql);
 /// <summary>
 /// 执行SQL语句。服务端支持 CLIENT_SESSION_TRACK（MySQL 5.7+）时 "USE xxx" 会经 OK 包的
-/// session-state-change 回带并更新 client.database；老服务端不带该信息，那时切库须用
+/// session-state-change 回带，收到应答时经 mysql_record 更新 client.database；老服务端不带该信息，那时切库须用
 /// mysql_selectdb，否则重连会按旧库名握手。
 /// 接收侧不拼 16MB 续传包：单个包载荷达 16MB-1（0xFFFFFF，如超大的行）即按协议错误断连，返回 ERR_FAILED。
 /// 本组 mysql 命令接口收到应答即 mysql_record，连接级 mysql_erro / mysql_last_id / mysql_affected_rows
@@ -169,13 +170,14 @@ int32_t smtp_ping(smtp_ctx *smtp);
 /// <summary>
 /// 邮件发送。先在锁外 mail_pack 组好整封信，组不出来（取不到熵）就不发任何命令、直接失败，连接不动。
 /// 锁覆盖整封邮件（含失败时补发的 RSET），期间其他协程的投递排队等待。
-/// 投递成功不发 RSET（正文收到 250 时服务端已清空事务）；投递失败才发 RSET 清掉服务端留下的半截信封，
-/// RSET 也失败即关闭连接——那说明连接已不干净，留着它下一封信只会被回 503
+/// 投递成功不发 RSET（正文收到 250 时服务端已清空事务）；应答码不对才发 RSET 清掉服务端留下的半截信封，
+/// RSET 也失败即关闭连接——那说明连接已不干净，留着它下一封信只会被回 503。
+/// 某条命令没等到应答（超时 / 断开）就直接关连接、等关闭确认，不发 RSET
 /// </summary>
 /// <param name="smtp">smtp_ctx</param>
-/// <param name="mail">mail_ctx</param>
+/// <param name="mail">mail_ctx；返回前不得改动或释放（发送期间多次挂起，信封逐条从它取）</param>
 /// <returns>ERR_OK 邮件已投递。只反映这封邮件的成败，不反映连接状态——
-/// 投递失败且补发的 RSET 也失败时连接已被关掉，
+/// 有命令没等到应答，或投递失败且补发的 RSET 也失败时，连接已被关掉，
 /// 下一次发送要么先 smtp_ping 重连，要么就在已关的连接上失败</returns>
 int32_t smtp_send(smtp_ctx *smtp, mail_ctx *mail);
 // 以下 pgsql 命令接口全部经连接内的串行化执行器串行发出：pgsql 一条命令要读到 ReadyForQuery
@@ -192,7 +194,8 @@ int32_t smtp_send(smtp_ctx *smtp, mail_ctx *mail);
 int32_t pgsql_connect(task_ctx *task, pgsql_ctx *pg);
 /// <summary>
 /// 在独立 TCP 连接上向服务端发送 CancelRequest，中止当前正在执行的查询。
-/// 服务端处理后主动关闭该连接、无响应；原连接会收到错误回包。
+/// 服务端处理后主动关闭该连接、无响应；原连接会收到错误回包。发完挂起等服务端断开才返回(最多等读超时)：
+/// 服务端异步处理取消，不等的话要取消的查询刚好已结束时，取消会打中原连接上的下一条命令。
 /// 有意不参与命令串行化（排队等锁就等到查询自己结束了），也不往原连接写任何字节。
 /// 这条连接一律明文：原连接走 TLS 时，BackendKeyData 的 pid 与 key 会以明文上线路(打一行 DEBUG)
 /// </summary>
@@ -326,7 +329,7 @@ int32_t mongo_drop(mongo_ctx *mongo, char *options, size_t optlens);
 /// insert 命令 插入一个或多个文档 MORETOCOME 可用
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
-/// <param name="docs">[ document, ... ]</param>
+/// <param name="docs">[ document, ... ]，元素须都是文档，有不是的整条命令不发、返回 ERR_FAILED</param>
 /// <param name="dlens">docs长度</param>
 /// <param name="options">可选 其他参数 document (ordered maxTimeMS writeConcern bypassDocumentValidation comment)</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
@@ -336,7 +339,7 @@ int32_t mongo_insert(mongo_ctx *mongo, char *docs, size_t dlens, char *options, 
 /// update 命令 更新一个或多个文档 MORETOCOME 可用
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
-/// <param name="updates">[{q:u:...}, ...]</param>
+/// <param name="updates">[{q:u:...}, ...]，元素要求同 mongo_insert 的 docs</param>
 /// <param name="ulens">updates长度</param>
 /// <param name="options">可选 其他参数 document (ordered maxTimeMS writeConcern bypassDocumentValidation comment let)</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
@@ -347,19 +350,20 @@ int32_t mongo_update(mongo_ctx *mongo, char *updates, size_t ulens, char *option
 /// delete 命令 删除一个或多个文档 MORETOCOME 可用
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
-/// <param name="deletes">[{q:...}, ...]</param>
+/// <param name="deletes">[{q:...}, ...]，元素要求同 mongo_insert 的 docs</param>
 /// <param name="dlens">deletes长度</param>
 /// <param name="options">可选 其他参数 document (comment let ordered writeConcern maxTimeMS)</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <returns>ERR_FAILED 失败  其他 删除的数量；置 MORETOCOME 时成功恒返回 0，同 mongo_insert</returns>
 int32_t mongo_delete(mongo_ctx *mongo, char *deletes, size_t dlens, char *options, size_t optlens);
 /// <summary>
-/// bulkwrite 命令 在一个请求中对多个集合执行多次插入、更新和删除操作  MORETOCOME 可用
+/// bulkwrite 命令 在一个请求中对多个集合执行多次插入、更新和删除操作  MORETOCOME 可用。
+/// 服务端只认发往 admin 库，组包恒写 admin、与连接当前库无关；操作落到哪个库由 nsinfo 里的完整命名空间定
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
-/// <param name="ops">[insert,update,delete...]</param>
+/// <param name="ops">[insert,update,delete...]，元素要求同 mongo_insert 的 docs</param>
 /// <param name="olens">ops长度</param>
-/// <param name="nsinfo">[ns...] 操作的命名空间（数据库和集合）.将ops中每个操作的命名空间ID索引设置为ns中匹配的命名空间大量索引.索引从0开始</param>
+/// <param name="nsinfo">[ns...] 操作的命名空间（数据库和集合）.将ops中每个操作的命名空间ID索引设置为ns中匹配的命名空间大量索引.索引从0开始；元素要求同 ops</param>
 /// <param name="nlens">nsinfo长度</param>
 /// <param name="options">可选 其他参数 document (ordered bypassDocumentValidation comment let errorsOnly cursor writeConcern)</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
@@ -385,7 +389,8 @@ mgopack_ctx *mongo_find(mongo_ctx *mongo, char *filter, size_t flens, char *opti
 /// <param name="pipeline">[ stage, ... ] 聚合管道阶段数组</param>
 /// <param name="pllens">pipeline长度</param>
 /// <param name="options">可选 其他参数 document 
-/// (explain allowDiskUse maxTimeMS bypassDocumentValidation readConcern collation hint comment writeConcern let)
+/// (cursor explain allowDiskUse maxTimeMS bypassDocumentValidation readConcern collation hint comment writeConcern let)；
+/// cursor 如 {batchSize:N} 定首批条数，不带时自动补空的 cursor
 /// </param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <returns>NULL 失败；mgopack_ctx 的所有权与有效期同 mongo_hello</returns>
@@ -489,9 +494,8 @@ int32_t mongo_refreshsession(mongo_session *session);
 /// 包恒带 MORETOCOME（见 mongo_pack_endsession）只发不等，结果不看
 /// </summary>
 /// <param name="session">mongo_session；所有权交出，返回后调用方手上的指针失效。
-///   释放排在内部等锁的那次挂起之后：挂起窗口里 session 仍然有效，在途的
-///   commit/rollback 由 serial 锁排在本函数之前，醒来还要读 session->options。
-///   调用方不得在此期间另行释放，返回后也不得再碰</param>
+///   解绑与释放都排在内部等锁之后：已在跑的与排在本函数之前的 commit/rollback 照常收尾，
+///   排在之后的见已解绑即失败返回。调用方不得在此期间另行释放，返回后也不得再碰</param>
 void mongo_freesession(mongo_session *session);
 /// <summary>
 /// 事务开始。一条连接同时只允许一个活跃事务（CRUD 命令的事务上下文取自连接上的当前绑定），
@@ -501,6 +505,7 @@ void mongo_freesession(mongo_session *session);
 /// 或给事务用独占连接。
 /// 事务进行中连接换过（断开后重连）即作废：此后带事务上下文的命令一律组包失败，
 /// 组包后排队等锁期间才换的，拿到锁后同样不发、按失败返回（见 mongo_txn_moved）。
+/// 组包后排队期间事务已收尾（commit / rollback / freesession，或收尾后又 begin）的命令也不发、按失败返回。
 /// 绑定留到 commit/rollback 收尾，二者都在新连接上发 abortTransaction 让服务端当场中止、放锁（提交已交出过的 commit
 /// 除外，照常重发，见 mongo_commit）；要继续须重新 begin
 /// </summary>
@@ -551,7 +556,9 @@ int32_t kcp_synstart(task_ctx *task, struct kcp_ctx *kcp,
 /// kcp 同步发送并等待响应:发送后挂起当前协程,收到对端响应后返回;须在协程内调用。
 /// sess 取 kcp_start 时传入的值,同一会话上的多次 synsend 按 FIFO 排队唤醒;
 /// 以 kcp_start(sess=0) 异步建立的会话不能用本函数。
-/// 超时会 kcp_stop 销毁该会话;被 CLOSE 唤醒(socket 关闭、对端失联)时句柄也已置停。两种情形都要重新 kcp_start 才能再用
+/// 超时会 kcp_stop 销毁该会话;被 CLOSE 唤醒(socket 关闭、对端失联)时句柄也已置停。两种情形都要重新 kcp_start 才能再用。
+/// 会话在没有本函数在等时被拆(死链、积压超限、socket 关闭)，句柄并不知道：下次调用照发，等满读超时才返回 NULL；
+/// 要立即知道就在 task_closed 回调里按 sess 认出这个会话后 kcp_stop，之后本函数当场返回 NULL
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="kcp">已 kcp_start 的 kcp_ctx</param>
@@ -586,7 +593,8 @@ const db_pool_ops *mysql_pool_ops(void);
 const db_pool_ops *pgsql_pool_ops(void);
 /// <summary>
 /// MongoDB 连接池操作表，直接传给 db_pool_new。
-/// 归还时连接上还绑着事务（没 commit / rollback）就先 abort；没等到应答也在本地解绑，再断开
+/// 归还时一律清掉连接级 flags（mongo_set_flag 置的 MORETOCOME，借出期间断了的也清）；连接上还绑着事务（没 commit / rollback）就先 abort，
+/// 没等到应答也在本地解绑，再断开。mongo_db / mongo_collection 换的库与集合池不管，借用者要在归还前自己还原
 /// </summary>
 /// <returns>静态操作表</returns>
 const db_pool_ops *mongo_pool_ops(void);

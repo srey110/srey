@@ -135,7 +135,7 @@ services:
     volumes:
       - mongo_data_83:/data/db
     # 副本集分支里 rs.initiate() 幂等地留在健康检查内，覆盖 entrypoint 引导覆盖不到的那种情形：
-    # dbpath 非空但原本是单机（本仓库既有 volume 即如此），此时引导被跳过，只能在这里补一次。
+    # dbpath 非空但原本是单机（例如先用 MONGO_REPLSET= 单机跑过），此时引导被跳过，只能在这里补一次。
     # 放健康检查而非独立 init 服务，是因为后者的 healthy 会在 initiate 之前就成立，客户端连上来是非
     # primary。末句令未成为可写 primary 时退出码非 0，不像单机分支的 ping 那样在降级状态下仍报 healthy
     healthcheck:

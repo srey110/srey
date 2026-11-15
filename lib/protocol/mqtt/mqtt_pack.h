@@ -74,7 +74,7 @@ int32_t mqtt_topics_unsubscribe(binary_ctx *topics, const char *topic);
 /// </summary>
 /// <param name="version">mqtt_protversion</param>
 /// <param name="cleanstart">新开始 表明此次连接是一个新的会话还是一个已存在的会话的延续；MQTT 3.1.1 下若 clientid 为零长度，此值必须为 1</param>
-/// <param name="keepalive">保持连接</param>
+/// <param name="keepalive">保持连接(秒)，只写进报文：PINGREQ 由调用方按间隔自己发，本库不代发</param>
 /// <param name="clientid">唯一的客户标识符 UTF-8字符串；NULL 或空串均按零长度处理（5.0 由服务端在 CONNACK 的 CLIENT_ID 属性里分配，3.1.1 没有分配机制）。MQTT 3.1.1 零长度时必须 cleanstart=1，否则返回 NULL</param>
 /// <param name="user">用户名  UTF-8字符串；NULL 不带，空串带零长用户名</param>
 /// <param name="password">密码 二进制数据；NULL 不带，非 NULL 时按 pwlens 带(可为 0)</param>
@@ -255,7 +255,7 @@ char *mqtt_pack_ping(size_t *lens);
 /// <returns>char * 堆上的数据包(释放同 mqtt_pack_connect)，不会失败</returns>
 char *mqtt_pack_pong(size_t *lens);
 /// <summary>
-/// 断开通知
+/// 断开通知。MQTT 3.1.1 只由客户端发；服务端要断开 3.1.1 客户端直接关连接，不发它
 /// </summary>
 /// <param name="version">mqtt_protversion</param>
 /// <param name="reason">原因码(MQTT5.0) 0x00:正常断开 0x04:包含遗嘱消息的断开</param>

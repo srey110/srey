@@ -43,7 +43,7 @@ void task_free(task_ctx *task);
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="_startup">任务初始化回调函数</param>
-/// <param name="_closing">任务关闭回调函数,做业务相关收尾工作._closing执行后，不代表该任务已经无引用</param>
+/// <param name="_closing">任务关闭回调函数,做业务相关收尾工作._closing执行后，不代表该任务已经无引用；协程 task 要延时收尾见 task_timeout</param>
 /// <returns>ERR_OK 成功。失败(名字重名)时 task 从未进过 loader 的表，所有权仍在调用方手上，
 /// 须自行 task_free；此时调 task_ungrab 不会释放它，也不会有任何提示</returns>
 int32_t task_register(task_ctx *task, _task_startup_cb _startup, _task_closing_cb _closing);
@@ -136,7 +136,8 @@ int32_t task_accept_group(task_ctx *head, const name_t *handles, uint16_t n);
 /// <summary>
 /// 超时：ms 毫秒后触发。sess 与 _timeout 互斥,须恰好一个有效(违反将 ASSERTAB abort)：
 /// _timeout≠NULL 且 sess=0 → 到期回调 _timeout(task, 0)；
-/// _timeout=NULL 且 sess≠0 → 到期投递 TIMEOUT 消息,按 sess 唤醒等待协程(无等待者则丢弃，协程 task 上另打一条 WARN)
+/// _timeout=NULL 且 sess≠0 → 到期投递 TIMEOUT 消息,按 sess 唤醒等待协程(无等待者则丢弃，协程 task 上另打一条 WARN)。
+/// 定时器不持 task 引用：task 释放后才到期的不再触发；closing 里要延时收尾，协程 task 就在 closing 里 coro_sleep 挂起等(挂起的协程持着 task)
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="sess">session；消息(唤醒)模式须非 0,回调模式须为 0</param>
@@ -271,8 +272,8 @@ void task_multi_call(task_ctx *dsts[], int32_t n, subtype_t reqtype,
                      void *data, size_t size, int32_t copy);
 /// <summary>
 /// 监听。task 设过 task_accept_group 的，只在有组员的 net 线程上收，新连接交给所在线程的组员。
-/// 带 evssl 时 ACCEPT 早于 TLS 握手完成投来，握手完成前发送会被判断连；要先发数据(如欢迎语)就订阅 NETEV_AUTHSSL，
-/// 在 SSLEXCHANGED 回调里发
+/// 带 evssl 时 ACCEPT 早于 TLS 握手完成投来，握手完成前发送会被判断连；握手结果恒投 SSLEXCHANGED(不用另订 NETEV_AUTHSSL)，
+/// 要先发数据(如欢迎语)就在它的回调里发。NETEV_AUTHSSL 只给明文监听、之后再升级的连接用
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="pktype">包类型</param>
@@ -358,7 +359,8 @@ void task_stat(task_ctx *task, uint64_t nmsg[MSG_TYPE_ALL], uint64_t dispatch_cp
 void task_accepted(task_ctx *task, _net_accept_cb _accept);
 /// <summary>
 /// 注册数据接收回调函数。协程 task 里等应答的一方超时或已转去等关闭后才到的应答(含 DB、smtp 客户端
-/// 连接上迟到的协议包)也投到这里，同一 task 收多种协议时须按 pktype 分流
+/// 连接上迟到的协议包)也投到这里，同一 task 收多种协议时须按 pktype 分流。
+/// 框架内部建的连接(DNS 的 TCP 查询等)在等待结束后、关闭生效前迟到的包同样会落到这里，按连接处理的业务须忽略不认识的 sk
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="_recv">_net_recv_cb 回调函数</param>
@@ -383,7 +385,7 @@ void task_connected(task_ctx *task, _net_connect_cb _connect);
 void task_ssl_exchanged(task_ctx *task, _net_ssl_exchanged_cb _exchanged);
 /// <summary>
 /// 注册应用层握手完成回调函数。协程 task 里 coro_handshaked 等满超时后才到的握手结果(含 DB、smtp、
-/// websocket 客户端建链)也投到这里，按 pktype 过滤
+/// websocket 客户端建链)也投到这里，按 pktype 过滤。异步 kcp_start 的建会话结果也投到这里，按 sess 认是哪个会话
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="_handshake">_net_handshake_cb 回调函数</param>
@@ -414,7 +416,9 @@ void task_closed(task_ctx *task, _net_close_cb _close);
 void task_watch_closed(task_ctx *task, _net_close_watch_cb cb, void *arg);
 /// <summary>
 /// 注册 UDP 数据接收回调函数。源地址以 netaddr_ctx 原样给出、不逐包格式化成字符串，只在回调内有效：
-/// 回包直接把它交给 ev_sendto_addr；要字符串时用 netaddr_ip / netaddr_port，要留到回调之后就整个拷走
+/// 回包直接把它交给 ev_sendto_addr；要字符串时用 netaddr_ip / netaddr_port，要留到回调之后就整个拷走。
+/// kcp 会话的数据按回调的 sess 认是哪个会话(见 _net_recvfrom_cb)。框架内部建的 UDP socket(DNS 查询)在等待结束后、
+/// 关闭生效前迟到的数据报同样会落到这里，须忽略不认识的 sk
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="_recvfrom">_net_recvfrom_cb 回调函数</param>

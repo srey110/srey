@@ -1,6 +1,7 @@
 -- 通用有界连接池：管理 mysql / pgsql / mongo / smtp 这类 conn_pub 长连接，每个池最多 max 条。
 -- 多协程按 FIFO 借还；连接内部的命令串行仍由各 conn 自己的 serial 负责，池只管“借哪条”。
--- 连接对象带 reset_session 方法时（mysql / pgsql / mongo 有），归还时先清会话状态（回滚没结束的事务）再交给下一个人。
+-- 连接对象带 reset_session 方法时（mysql / pgsql / mongo 有），归还时先清会话状态（回滚没结束的事务）再交给下一个人；
+-- 带 reset_local 的（mongo 有）不论连接断没断都先清掉借用者留下的本地状态。
 --
 -- 等待者用 srey._coro_wait 挂在池自己的 sess 上，put 用 srey._coro_wake 把连接直接交接给队头
 -- （不经过空闲栈），唤醒统一在 message_dispatch 末尾摊平。池状态只在不会挂起的语句里改：
@@ -35,7 +36,8 @@ end
 ---@field connect fun(self:DbPoolConn):boolean 建连/重连；会挂起
 ---@field ping fun(self:DbPoolConn):boolean 探活；会挂起
 ---@field quit fun(self:DbPoolConn) 断开；会挂起
----@field reset_session (fun(self:DbPoolConn):boolean)? 归还时清会话状态；会挂起
+---@field reset_session (fun(self:DbPoolConn):boolean)? 归还时清会话状态；会挂起，连接断了不调
+---@field reset_local (fun(self:DbPoolConn))? 归还时清本地状态（不随断连消失的那些）；不挂起，连接断了也调
 
 ---构造配置：factory 必填，其余可省
 ---@class DbPoolOpts
@@ -604,6 +606,9 @@ function M:_return(c)
     if self.closed then
         self:_drop(c)
         return
+    end
+    if c.reset_local then
+        srey.xpcall(c.reset_local, c)-- 断了的连接下次借出会重连，本地状态不清就跟着交给下一个人
     end
     if _ready(c) and self:_expired(c, srey.timer_ms()) then
         self:_drop_wake(c)

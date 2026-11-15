@@ -86,10 +86,13 @@ runner.run(function(t)
     local cp = pg.pg:pack_cancel()
     t:eq(16, cp and #cp, "降到 3.0 后取消请求按 4 字节密钥组包")
     pg:quit()
+    srey.sleep(100)-- 等旧连接的 Terminate 落到回调里，免得它占了新一轮的 msgs[1]
     msgs, nego = {}, 32
     pg = pgsql.new("127.0.0.1", _PORT, SSL_NAME.NONE, "user", PASSWORD, "db")
     pg:set_protocol(2)
     t:check(not pg:connect(), "降到 3.0 后密钥不是 4 字节：拒连")
+    srey.sleep(100)-- 客户端若多发了字节，让它落到回调里再数
+    t:eq(1, #msgs, "密钥长度不对的那轮服务端只收到 Startup（拒连是客户端校验密钥所致）")
     nego = false
 
     srey.unlisten(lid)

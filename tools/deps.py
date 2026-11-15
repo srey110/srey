@@ -9,6 +9,7 @@
 依赖源码克隆到 deps/<name>(不入版本控制),编译产物按仓库既有约定摆放:
     头文件 -> lib/<name>/     (与 -Ilib、MSVC 的 ../lib 对齐,#include <openssl/ssl.h> 直接命中)
     静态库 -> bin/            (与 -Lbin、MSVC 的 ../bin/ 对齐)
+    Windows 上 openssl 的 ossl_static.pdb -> bin/<平台>/<配置>/(理由见 install_ossl_pdb)
 所以构建文件(mk.sh / CMakeLists.txt / 四个 .vcxproj)不需要任何改动。
 
 用法(项目根目录运行):
@@ -87,7 +88,7 @@ DEPS = {
 IS_WIN = os.name == "nt"
 # 目标架构:mk.sh 风格的位置参数(m32/m64/arm64),不传则探测。
 # openssl 的 Windows 构建没有 ./config 自动探测,必须显式给 target;POSIX 上显式指定时两个依赖都附加 cflag。
-# Windows 上 mimalloc 的目标由所在 shell 的 cl.exe 决定,不传架构
+# Windows 上 openssl(nmake)与非 VS 生成器下的 mimalloc 跟所在 shell 的 cl.exe 走;VS 生成器按 vsplat 传 -A
 ARCH_SPECS = {
     "m32": {"vc": "VC-WIN32", "cflag": "-m32", "vsplat": "Win32"},
     "m64": {"vc": "VC-WIN64A", "cflag": "-m64", "vsplat": "x64"},
@@ -152,8 +153,10 @@ def detect_arch() -> str:
     for v in (os.environ.get("VSCMD_ARG_TGT_ARCH"), os.environ.get("Platform")):
         if v and v.strip().lower() in ARCH_ALIAS:
             return ARCH_ALIAS[v.strip().lower()]
-    arch = ARCH_ALIAS.get(platform.machine().strip().lower(), "m64")
-    if "m64" == arch and not IS_WIN and "32" == out(["getconf", "LONG_BIT"]):
+    machine = platform.machine().strip().lower()
+    arch = ARCH_ALIAS.get(machine, "m64")
+    # 只在 x86_64 / amd64 上看位宽,同 mk.sh 与 CMake:查不到的机器名一律按 m64,三方库名才对得上
+    if machine in ("x86_64", "amd64") and not IS_WIN and "32" == out(["getconf", "LONG_BIT"]):
         return "m32"
     return arch
 
@@ -433,7 +436,25 @@ def build_openssl(src: Path, arch: str, forced: bool, dbg: bool) -> list:
             libs += sorted((prefix / d).glob(pat)) if (prefix / d).is_dir() else []
     if not libs:
         raise RuntimeError(f"在 {prefix} 下找不到 crypto/ssl 静态库")
-    return [dst_inc] + copy_into(libs, LIB_DIR, lib_sfx(arch, dbg))
+    return [dst_inc] + copy_into(libs, LIB_DIR, lib_sfx(arch, dbg)) + install_ossl_pdb(src, arch, dbg)
+
+
+def ossl_pdb_dst(arch: str, dbg: bool) -> Path:
+    """该变体的链接输出目录(同 .vcxproj 的 OutDir:bin/<平台>/<配置>/)里那份 pdb"""
+    return LIB_DIR / ARCH_SPECS[arch]["vsplat"] / ("Debug" if dbg else "Release") / "ossl_static.pdb"
+
+
+def install_ossl_pdb(src: Path, arch: str, dbg: bool) -> list:
+    """openssl 的目标文件记着源码树里 ossl_static.pdb 的绝对路径,换变体重编就被同名覆盖,
+    之前变体的库再链接时报 LNK4099。链接器在那里找不到对的会再找本次链接的输出目录,
+    它按平台与配置分开、与变体一一对应,所以每编一个变体就把 pdb 拷过去"""
+    pdb = src / "ossl_static.pdb"
+    if not IS_WIN or not pdb.is_file():
+        return []
+    dst = ossl_pdb_dst(arch, dbg)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(str(pdb), str(dst))
+    return [dst]
 
 
 def build_mimalloc(src: Path, arch: str, forced: bool, dbg: bool) -> list:
@@ -571,6 +592,10 @@ def clean() -> int:
         for f in found_libs(n):
             print(f"删除 {f.relative_to(ROOT)}")
             f.unlink()
+    for f in (ossl_pdb_dst(a, d) for a in ARCH_SPECS for d in (False, True)):
+        if f.is_file():
+            print(f"删除 {f.relative_to(ROOT)}")
+            f.unlink()
     if STALE_VARIANT_FILE.is_file():
         print(f"删除 {STALE_VARIANT_FILE.relative_to(ROOT)}(旧版本留下的变体标记,已废弃)")
         STALE_VARIANT_FILE.unlink()
@@ -606,7 +631,7 @@ def main() -> int:
 
     if do_clean:
         return clean()
-    # Windows 上 mimalloc 的目标由所在提示符的 cl.exe 定,参数只管贴后缀:两者不一致会编出别的架构还贴这个名字
+    # Windows 上 openssl(及非 VS 生成器下的 mimalloc)的目标由所在提示符的 cl.exe 定,参数只管贴后缀:两者不一致会编出别的架构还贴这个名字
     shell_arch = ARCH_ALIAS.get((os.environ.get("VSCMD_ARG_TGT_ARCH") or os.environ.get("Platform") or "").strip().lower())
     if IS_WIN and arch_forced and shell_arch and shell_arch != arch:
         sys.stderr.write(f"当前 VS 提示符的目标架构是 {shell_arch},与参数 {arch} 不符;换到 {arch} 的开发者提示符再跑\n")

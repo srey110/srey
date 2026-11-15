@@ -955,7 +955,7 @@ static int32_t _mqtt_pong(mqtt_pack_ctx *pack, int32_t client, int32_t *status) 
     }
     return ERR_OK;
 }
-//两个方向都允许  断开连接通知
+//两个方向都允许  断开连接通知；3.1.1 规范里只有客户端发，服务端发来的也照收(反正要关)
 static int32_t _mqtt_disconnect(mqtt_pack_ctx *pack, binary_ctx *br, int32_t *status) {
     if (0 != pack->fixhead.flags) {
         BIT_SET(*status, PROT_ERROR);

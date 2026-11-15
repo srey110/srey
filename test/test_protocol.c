@@ -749,23 +749,36 @@ static void test_http_status_line(CuTest *tc) {
         "Host: a\r\n"
         "\r\n",
         1);
-    // 2. 状态行省略 reason 连空格也省 → 放行（常见服务端这样发）；连状态码都没有 → 拒绝
+    // 2. 状态行省略 reason 连空格也省：客户端放行（见 test_http_status_forms）；连状态码都没有 → 客户端也拒。
+    //    _http_smuggle_check 按服务端方向解，服务端只认请求行，状态行形状一律拒
+    {
+        buffer_ctx buf;
+        ud_cxt ud;
+        int32_t status = PROT_INIT;
+        buffer_init(&buf);
+        ZERO(&ud, sizeof(ud_cxt));
+        _bput(&buf, "HTTP/1.1 \r\nContent-Length: 0\r\n\r\n");
+        CuAssertPtrEquals(tc, NULL, _t_http_unpack(1, &buf, &ud, NULL, &status));
+        CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+        _http_udfree(&ud);
+        buffer_free(&buf);
+    }
     _http_smuggle_check(tc,
         "HTTP/1.1 200\r\n"
         "Content-Length: 0\r\n"
         "\r\n",
-        0);
+        1);
     _http_smuggle_check(tc,
         "HTTP/1.1 \r\n"
         "Content-Length: 0\r\n"
         "\r\n",
         1);
-    // 3. reason-phrase 为空但保留尾随空格 → 合法，接受
+    // 3. reason-phrase 为空但保留尾随空格：客户端合法（见 test_http_status_forms），服务端同样按状态行形状拒
     _http_smuggle_check(tc,
         "HTTP/1.1 200 \r\n"
         "Content-Length: 0\r\n"
         "\r\n",
-        0);
+        1);
     // 4. 请求以空行(CRLF)开头 → 服务端忽略它照常解析(RFC 9112 §2.2，细节见 test_http_leading_crlf)
     _http_smuggle_check(tc,
         "\r\n"
@@ -1710,11 +1723,24 @@ static void test_http_nobody_status(CuTest *tc) {
     _http_udfree(&ud);
     buffer_free(&buf);
 
-    // 4b. 服务端方向(client=0)：伪造的响应式请求行不得套用该规则，否则声明的 body
+    // 4b. 服务端方向(client=0)：伪造的响应式请求行直接拒收。放过去再套 204 规则的话，声明的 body
     //     会留在缓冲里被当成第二个请求解析出来——反代前置时就是一次请求走私
     buffer_init(&buf);
     _bput(&buf, "HTTP/1.1 204 z\r\n");
-    // 尾随的这一整条伪装请求恰 32 字节：21 + 9 + 2
+    _bput(&buf, "Content-Length: 32\r\n");
+    _bput(&buf, "\r\n");
+    _bput(&buf, "GET /admin HTTP/1.1\r\nHost: a\r\n\r\n");
+    ZERO(&ud, sizeof(ud_cxt));
+    status = PROT_INIT;
+    CuAssertPtrEquals(tc, NULL, _t_http_unpack(0, &buf, &ud, NULL, &status));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    _http_udfree(&ud);
+    buffer_free(&buf);
+
+    // 4d. 服务端方向：首末段都是版本的行能过请求行解析，204 无体规则只认客户端方向(_http_nobody_resp 的 0 == client)，
+    //     声明的 32 字节当本请求的体读走，不剩在缓冲里当第二个请求
+    buffer_init(&buf);
+    _bput(&buf, "HTTP/1.1 204 HTTP/1.1\r\n");
     _bput(&buf, "Content-Length: 32\r\n");
     _bput(&buf, "\r\n");
     _bput(&buf, "GET /admin HTTP/1.1\r\nHost: a\r\n\r\n");
@@ -1723,14 +1749,24 @@ static void test_http_nobody_status(CuTest *tc) {
     pack = _t_http_unpack(0, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, pack);
     dlen = 0;
-    http_data(pack, &dlen);
-    CuAssert(tc, "on a request stream the declared body must still be consumed", 32 == dlen);
-    CuAssert(tc, "nothing may be left behind for a second parse", 0 == buffer_size(&buf));
+    data = http_data(pack, &dlen);
+    CuAssertTrue(tc, 32 == dlen && 0 == memcmp(data, "GET /admin", 10));
+    CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
     _http_pkfree(pack);
     _http_udfree(&ud);
     buffer_free(&buf);
 
-    // 4. 反向用例：请求行首段不是 HTTP-version，request-target 恰为 "204" 也不得套用该规则
+    // 4c. 服务端方向：省略 reason 的两段式只认状态行，"HTTP/1.1 /admin" 当请求行拒收
+    buffer_init(&buf);
+    _bput(&buf, "HTTP/1.1 /admin\r\nHost: a\r\n\r\n");
+    ZERO(&ud, sizeof(ud_cxt));
+    status = PROT_INIT;
+    CuAssertPtrEquals(tc, NULL, _t_http_unpack(0, &buf, &ud, NULL, &status));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    _http_udfree(&ud);
+    buffer_free(&buf);
+
+    // 4. 客户端方向：首段不是 HTTP-version 的（请求行形状，target 恰为 "204"）当状态行拒收
     buffer_init(&buf);
     _bput(&buf, "GET 204 HTTP/1.1\r\n");
     _bput(&buf, "Content-Length: 3\r\n");
@@ -1738,13 +1774,8 @@ static void test_http_nobody_status(CuTest *tc) {
     _bput(&buf, "abc");
     ZERO(&ud, sizeof(ud_cxt));
     status = PROT_INIT;
-    pack = _t_http_unpack(1, &buf, &ud, NULL, &status);
-    CuAssertPtrNotNull(tc, pack);
-    dlen = 0;
-    data = http_data(pack, &dlen);
-    CuAssert(tc, "requests must keep their body regardless of the target text", 3 == dlen);
-    CuAssertTrue(tc, 0 == memcmp(data, "abc", 3));
-    _http_pkfree(pack);
+    CuAssertPtrEquals(tc, NULL, _t_http_unpack(1, &buf, &ud, NULL, &status));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
     _http_udfree(&ud);
     buffer_free(&buf);
 }
@@ -6483,6 +6514,43 @@ static void test_prots_may_resume_websock_ping(CuTest *tc) {
         CuAssertIntEquals(tc, expect[i], got[i]);
     }
 }
+// 分片消息收到一半时插进来的 PONG / CLOSE 不唤醒等待者（slice 是 0，收分片的会当成末片）；
+// 分片收完后的 PONG 照常可唤醒，分片本身的各帧也照常可唤醒
+static void test_prots_may_resume_websock_ctrl_midmsg(CuTest *tc) {
+    websock_ctx ws;
+    ud_cxt ud;
+    buffer_ctx buf;
+    struct websock_pack_ctx *pack;
+    size_t flens[6];
+    void *frames[6];
+    // 首帧、PONG、中间帧、CLOSE、末帧、末帧之后的 PONG
+    int32_t expect[6] = { ERR_OK, ERR_FAILED, ERR_OK, ERR_FAILED, ERR_OK, ERR_OK };
+    int32_t got[6];
+    int32_t status;
+    int32_t i;
+    frames[0] = websock_pack_text(0, 0, "AA", 2, &flens[0]);
+    frames[1] = websock_pack_pong(0, "p", 1, &flens[1]);
+    frames[2] = websock_pack_continua(0, 0, "BB", 2, &flens[2]);
+    frames[3] = websock_pack_close(0, 0, NULL, 0, &flens[3]);
+    frames[4] = websock_pack_continua(0, 1, "CC", 2, &flens[4]);
+    frames[5] = websock_pack_pong(0, "q", 1, &flens[5]);
+    _ws_ctx_init(&ws, &ud);
+    buffer_init(&buf);
+    for (i = 0; i < 6; i++) {
+        buffer_append(&buf, frames[i], flens[i]);
+        FREE(frames[i]);
+        status = PROT_INIT;
+        pack = _t_websock_unpack(1, &buf, &ud, NULL, &status);
+        got[i] = (NULL == pack) ? -2 : prots_may_resume(PACK_WEBSOCK, pack);
+        if (NULL != pack) {
+            _websock_pkfree(pack);
+        }
+    }
+    buffer_free(&buf);
+    for (i = 0; i < 6; i++) {
+        CuAssertIntEquals(tc, expect[i], got[i]);
+    }
+}
 // WS 承载 MQTT 时 prots_may_resume 必须按内层包判定：broker 主动推的 PUBLISH 不得唤醒
 // 等待者，SUBACK 可以。直连 PACK_MQTT 与 WS 承载两条路径的结论必须一致
 static void test_prots_may_resume_websock_mqtt(CuTest *tc) {
@@ -9835,6 +9903,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_prots_may_resume_default);
     SUITE_ADD_TEST(suite, test_prots_may_resume_websock_mqtt);
     SUITE_ADD_TEST(suite, test_prots_may_resume_websock_ping);
+    SUITE_ADD_TEST(suite, test_prots_may_resume_websock_ctrl_midmsg);
     SUITE_ADD_TEST(suite, test_prots_want);
     SUITE_ADD_TEST(suite, test_prots_want2);
     SUITE_ADD_TEST(suite, test_mail_html_and_clear);

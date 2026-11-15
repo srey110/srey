@@ -69,16 +69,17 @@ static void *_ltask_lalloc(void *ud, void *ptr, size_t osize, size_t nsize) {
     }
     return np;
 }
-// 设置 Lua package 搜索路径（cpath 或 path），把 luapath 下的对应扩展名目录放在最前：
-// srey 自己的模块一次命中，同名时 srey 目录里的优先于 Lua 默认路径
-static void _ltask_setpath(lua_State *lua, const char *name, const char *exname) {
+// 把 luapath 下的 ?.lua 放在 package.path 最前：srey 自己的模块一次命中，同名时 srey 目录里的优先于 Lua 默认路径。
+// 脚本目录里找不到的仍按原值继续找：Lua 默认模板(含当前目录 ./?.lua)与 LUA_PATH 环境变量
+static void _ltask_setpath(lua_State *lua) {
     lua_getglobal(lua, "package");
-    lua_getfield(lua, -1, name);
-    lua_pushfstring(lua, "%s?.%s;%s", luapath, exname, lua_tostring(lua, -1));
-    lua_setfield(lua, -3, name);
+    lua_getfield(lua, -1, "path");
+    lua_pushfstring(lua, "%s?.lua;%s", luapath, lua_tostring(lua, -1));
+    lua_setfield(lua, -3, "path");
     lua_pop(lua, 2);
 }
-// task state 的 panic 回调。返回后 Lua 随即 abort，日志是异步的，故同时直接写 stderr
+// task state 的 panic 回调。返回后 Lua 随即 abort：先写 stderr(前台看得到)，再同 ASSERTAB 走 log_abort
+// 把原因同步写进日志文件(守护化后 stderr 是 /dev/null，异步日志来不及落盘)
 static int32_t _ltask_panic(lua_State *lua) {
     const char *msg = lua_tostring(lua, -1);
     if (NULL == msg) {
@@ -86,7 +87,7 @@ static int32_t _ltask_panic(lua_State *lua) {
     }
     fprintf(stderr, "PANIC: unprotected error in call to Lua API (%s)\n", msg);
     fflush(stderr);
-    LOG_FATAL("lua panic: %s", msg);
+    log_abort(__FILENAME__, __FUNCTION__, __LINE__, msg);
     return 0;
 }
 // tocont 非 0 表示这条还有后续分片。控制消息只认自成一整条的 "@on" / "@off"。续片状态不论 warn 开没开都要记，
@@ -148,8 +149,8 @@ static lua_State *_ltask_luainit(task_ctx *task, ltask_ctx *alloc_ud) {
         // 越撑越大，压力下内存疯长、不回落
         lua_gc(lua, LUA_GCGEN);
     }
-    _ltask_setpath(lua, "cpath", DLL_EXNAME);
-    _ltask_setpath(lua, "path", "lua");
+    // 不设 cpath：不支持 C 模块（Lua 静态内嵌、不导出符号），Unix 不开 LUA_USE_DLOPEN、Windows 由 luauser.h 关掉
+    _ltask_setpath(lua);
     lua_pushstring(lua, procpath());
     lua_setglobal(lua, PATH_NAME);
     lua_pushstring(lua, PATH_SEPARATORSTR);

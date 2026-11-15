@@ -92,6 +92,11 @@ srey.watch_closed = function(fn)
     watch_n = watch_n + 1
     watch_fn = fn
 end
+-- watch_closing 同理换掉，留下观察者给 9.11b 直接调
+local closing_fn
+srey.watch_closing = function(fn)
+    closing_fn = fn
+end
 
 -- router 加载时就把 C 的 expect_continue 取进局部，流式准入放行后调它回 100。假包是 Lua 表，
 -- C 那边按 lightuserdata 校验会抛错：加载 mock 版前换成记账的假函数，加载完换回真的给 RealRoute
@@ -869,13 +874,32 @@ runner.run(function(t)
         t:eq(404, (dispatch(r, "GET", "/g1") or {}).code, "Router:middleware(mw, nil, mw) → 组内路由作废")
         r:prefix("/g"):middleware(mw, nil, mw):group(function() r:get("/g2", h) end)
         t:eq(404, (dispatch(r, "GET", "/g/g2") or {}).code, "GroupBuilder:middleware(mw, nil, mw) → 组内路由作废")
-        -- 坏标记随派生传下去，嵌套分组也作废；同级的正常分组不受影响
+        -- 解析不了的名字随派生传下去，嵌套分组也作废；同级的正常分组不受影响
         r:middleware("nodef"):prefix("/n"):group(function()
             r:prefix("/in"):group(function() r:get("/g3", h) end)
         end)
         t:eq(404, (dispatch(r, "GET", "/n/in/g3") or {}).code, "未定义名字 → 嵌套分组路由也作废")
         r:middleware(mw):group(function() r:get("/g4", h) end)
         t:eq(200, (dispatch(r, "GET", "/g4") or {}).code, "正常分组不受影响")
+    end
+
+    -- 4.14b 分组中间件同 C 侧在注册路由时才按名解析：先建分组后 define 照样生效；
+    -- 建分组后覆盖 define，其后注册的路由用新的，之前注册的仍用旧的（注册时快照）
+    do
+        local r = Route.new()
+        local seen = {}
+        local h = function(ctx) ctx:text(200, "ok") end
+        local g = r:middleware("late")
+        r:define("late", function(ctx, next) seen[#seen + 1] = "v1"; next() end)
+        g:group(function() r:get("/late1", h) end)
+        t:eq(200, (dispatch(r, "GET", "/late1") or {}).code, "先建分组后 define → 组内路由照常注册")
+        t:eq("v1", seen[1], "跑的是后 define 的中间件")
+        r:define("late", function(ctx, next) seen[#seen + 1] = "v2"; next() end)
+        g:group(function() r:get("/late2", h) end)
+        dispatch(r, "GET", "/late2")
+        t:eq("v2", seen[2], "建分组后覆盖 define → 其后注册的路由用新的")
+        dispatch(r, "GET", "/late1")
+        t:eq("v1", seen[3], "覆盖前注册的路由仍用旧的")
     end
 
     -- 4.15(回归):路由级 mws 表里夹 nil,须抛错而不是把后面的中间件一起丢掉
@@ -1307,7 +1331,11 @@ runner.run(function(t)
         t:eq("1", fseen and fseen.q, "NoRoute 拿得到查询参数")
         t:eq(nil, fseen and fseen.allow, "NoRoute 没有 allow")
 
-        r:no_route(nil)
+        -- 不可调用的值同注册期其它错误：打 ERROR、返回 false、原设置保留
+        t:eq(false, r:no_route({}), "no_route 传表 → false")
+        t:eq("nf", (dispatch(r, "GET", "/no-such") or {}).body, "传错后原 NoRoute 保留")
+
+        t:eq(true, r:no_route(nil), "no_route(nil) 清除 → true")
         resp = dispatch(r, "GET", "/no-such") or {}
         t:eq(404, resp.code, "清除 NoRoute 后回到默认 404")
 
@@ -1317,6 +1345,7 @@ runner.run(function(t)
             fseen = { path = ctx.path, allow = ctx.allow }
             ctx:text(405, "nm")
         end)
+        t:eq(false, r2:no_method(42), "no_method 传数字 → false，原设置保留（下面照常走 NoMethod）")
         fseen = nil
         resp = dispatch(r2, "POST", "/only-get") or {}
         t:eq(405, resp.code, "NoMethod 状态码")
@@ -1823,6 +1852,49 @@ runner.run(function(t)
             watch_fn(PACK_TYPE.HTTP, sk_b)
             t:eq(3, #log, "别的连接关闭不投")
         end
+    end
+
+    -- 9.11b task 关闭：task 先于连接关掉，CLOSE 投不回来；模块订的 task 关闭观察者给每条在途的流
+    -- 投一次 ABORT（同 C 侧 router_free）
+    do
+        local r = Route.new()
+        local log = {}
+        r:post_stream("/st", echo_stream(log))
+        feed(r, SLICE_TYPE.START, make_pack("POST", "/st"), sk_a)
+        feed(r, SLICE_TYPE.START, make_pack("POST", "/st"), sk_b)
+        if t:check("function" == type(closing_fn), "模块订过 task 关闭观察者") then
+            closing_fn()
+            t:eq(4, #log, "两条 START + 两条 ABORT")
+            t:eq(STREAM_ABORT, log[3], "task 关闭 → 投 STREAM_ABORT")
+            t:eq(STREAM_ABORT, log[4], "每条在途的流各投一次")
+            t:eq(nil, next(r._streams), "流表已清空")
+        end
+    end
+
+    -- 9.11c task 关闭中到的 chunked 首帧：关闭观察者只投那一次 ABORT，之后开的流没人收尾，
+    -- 回 503 并关连接、不建记录；定长请求照常处理
+    do
+        local r = Route.new()
+        local log = {}
+        r:post_stream("/st", echo_stream(log))
+        local real_isclosing = srey.isclosing
+        srey.isclosing = function() return true end
+        last_resp = nil
+        closed_log = {}
+        feed(r, SLICE_TYPE.START, make_pack("POST", "/st"))
+        t:eq(503, (last_resp or {}).code, "关闭中的 chunked 首帧 → 503")
+        t:eq(1, #closed_log, "503 后关连接")
+        t:eq(0, #log, "on_chunk 一次都没调")
+        t:eq(nil, r._streams[sk_a.skid], "不建流记录")
+        last_resp = nil
+        feed(r, SLICE_TYPE.SLICE, { _body = "x" })
+        feed(r, SLICE_TYPE.END, {})
+        t:eq(nil, last_resp, "被拒后的后续分片静默丢")
+        t:eq(0, #log, "后续分片也不进 on_chunk")
+        feed(r, 0, make_pack("POST", "/st", "hi"), sk_b)
+        t:eq(200, (last_resp or {}).code, "关闭中的定长请求照常处理")
+        t:eq("hi", (last_resp or {}).body, "定长请求体原样回显")
+        srey.isclosing = real_isclosing
     end
 
     -- ── 10. 真包走真实的 C match_pack ───────────────────────────────────────

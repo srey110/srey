@@ -6,6 +6,22 @@
 #ifdef EV_IOCP
 
 #define IOCP_STOP_DRAIN_TIMEOUT 3000// 停止排空整体截止(ms);超时说明有 socket close 后未从 map 摘除(bug)
+#define AFD_FILE_OPEN 1// NtCreateFile 的 FILE_OPEN：只打开已有的
+
+// 只给 NtCreateFile 开 \Device\Afd 用，布局同 winternl.h 的 UNICODE_STRING / OBJECT_ATTRIBUTES(不引它，免得与老 SDK 冲突)
+typedef struct afd_ustr {
+    USHORT len;     // 字节数，不含结尾 0
+    USHORT maxlen;  // 缓冲字节数
+    PWSTR buf;
+}afd_ustr;
+typedef struct afd_objattr {
+    ULONG len;      // 本结构大小
+    HANDLE root;
+    afd_ustr *name;
+    ULONG attrs;
+    PVOID sd;
+    PVOID sqos;
+}afd_objattr;
 exfuncs_ctx _exfuncs;// 全局扩展函数指针（AcceptEx/ConnectEx）
 static once_ctx _init_once = 0;// 扩展函数与命令回调表只初始化一次，见 once.h
 static void(*cmd_cbs[CMD_TOTAL])(watcher_ctx *watcher, cmd_ctx *cmd);// 命令回调函数表
@@ -29,8 +45,8 @@ static void *_iocp_exfunc(SOCKET fd, GUID *guid) {
 static int32_t _iocp_disconnect_iter(evsock_ctx *const *item, void *udata) {
     (void)udata;
     evsock_ctx *evsk = *item;
-    //防止 ERROR socket 还有在途未被取消的
-    CancelIoEx((HANDLE)evsk->sk.fd, NULL);
+    //防止 ERROR socket 还有在途未被取消的(_iocp_disconnect 对它直接返回)
+    _iocp_cancel_io(evsk);
     _iocp_disconnect(evsk);
     return 1;
 }
@@ -59,6 +75,11 @@ static void _iocp_init_funcs(void) {
         _exfuncs.acceptex = _iocp_exfunc(fd, &accept_uid);
         _exfuncs.connectex = _iocp_exfunc(fd, &connect_uid);
         CLOSE_SOCK(fd);
+        HMODULE nt = GetModuleHandleW(L"ntdll.dll");
+        if (NULL != nt) {
+            _exfuncs.ntcreatefile = (_nt_create_file)GetProcAddress(nt, "NtCreateFile");
+            _exfuncs.ntioctl = (_nt_ioctl_file)GetProcAddress(nt, "NtDeviceIoControlFile");
+        }
         _iocp_init_callback();
         once_end(&_init_once);
     }
@@ -69,6 +90,27 @@ int32_t _iocp_join(watcher_ctx *watcher, SOCKET fd) {
     }
     SetFileCompletionNotificationModes((HANDLE)fd, FILE_SKIP_SET_EVENT_ON_HANDLE);
     return ERR_OK;
+}
+// 打开 \Device\Afd 并关联到 watcher 的 IOCP，等可写的 AFD 轮询都投在它上面；打不开返回 NULL。
+// 不跳过同步成功的完成包：轮询当场可写也要照常回一次完成，契约同 0 字节探针
+static HANDLE _iocp_afd_open(HANDLE iocp) {
+    static WCHAR name[] = L"\\Device\\Afd\\Srey";
+    afd_ustr ustr = { (USHORT)(sizeof(name) - sizeof(WCHAR)), (USHORT)sizeof(name), name };
+    afd_objattr attr = { (ULONG)sizeof(afd_objattr), NULL, &ustr, 0, NULL, NULL };
+    ULONG_PTR iosb[2];// 同 IO_STATUS_BLOCK，只是出参
+    HANDLE afd = NULL;
+    if (NULL == _exfuncs.ntcreatefile
+        || NULL == _exfuncs.ntioctl
+        || 0 != _exfuncs.ntcreatefile(&afd, SYNCHRONIZE, &attr, iosb, NULL, 0,
+                                      FILE_SHARE_READ | FILE_SHARE_WRITE, AFD_FILE_OPEN, 0, NULL, 0)) {
+        return NULL;
+    }
+    if (NULL == CreateIoCompletionPort(afd, iocp, 0, 1)) {
+        (void)CloseHandle(afd);
+        return NULL;
+    }
+    SetFileCompletionNotificationModes(afd, FILE_SKIP_SET_EVENT_ON_HANDLE);
+    return afd;
 }
 // 抽干命令队列并逐条执行，返回条数。抽到命令才喂告警：喂 0 会把告警阈值复位
 static size_t _iocp_cmd_drain(watcher_ctx *watcher) {
@@ -313,6 +355,10 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
         ATOMIC_SET_RELAXED(&watcher->stop, 0);
         watcher->iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 1);// 1线程 对同一socket操作是线程安全
         ASSERTAB(NULL != watcher->iocp, ERRORSTR(ERRNO));
+        watcher->afd = _iocp_afd_open(watcher->iocp);
+        if (NULL == watcher->afd) {
+            LOG_WARN("watcher %u: open \\Device\\Afd failed, a peer that stops reading will make this thread busy-loop.", i);
+        }
         watcher->ev = ctx;
         watcher->element = sockel_map_new(SOCKEL_INIT_CAP, _iocp_sockel_free);
         pool_init(&watcher->pool, 0, SK_POOL_MAX, INIT_EVENTS_CNT, POOL_FIFO, &skcbs);
@@ -392,6 +438,9 @@ static void _iocp_free_watcher(ev_ctx *ctx) {
     }
     for (i = 0; i < ctx->nthreads; i++) {
         watcher = &ctx->watcher[i];
+        if (NULL != watcher->afd) {// 先于 IOCP 关：它关联在这个 IOCP 上
+            (void)CloseHandle(watcher->afd);
+        }
         (void)CloseHandle(watcher->iocp);
         _iocp_free_cmd(watcher);
         _evpub_defer_exec_free(watcher);

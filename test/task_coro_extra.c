@@ -9,6 +9,8 @@
 #define TIMEOUT_SETTLE_MS 1300
 // coro_recv_any 用例的 MQTT 监听端口，与 Lua unit_coro 的 15134 / 15135 错开
 #define RECV_ANY_PORT 15136
+// 带内升级防注入用例的明文监听端口，与 Lua unit_coro 的 15138 错开
+#define SSL_INJECT_PORT 15139
 
 typedef struct task_coro_extra_args {
     uint16_t httpport;
@@ -115,6 +117,32 @@ static int32_t _test_dns_lookup(task_ctx *task) {
         return ERR_FAILED;
     }
     FREE(ips);
+    return ERR_OK;
+}
+
+// dns_lookup 遇非法域名当场返回：先组包再建 socket / 建连，不建 socket、不挂起。
+// 判挂起没有：先 fork 一个协程，它要等本协程让出才跑，dns_lookup 返回时它跑过了就说明中途挂起过(白连了一次 DNS)
+static void _dns_bad_fork(void *owner, void *arg) {
+    (void)owner;
+    *(int32_t *)arg = 1;
+}
+static int32_t _test_dns_bad_domain(task_ctx *task) {
+    static int32_t ran;
+    ran = 0;
+    coro_fork(coro_task_co(task), _dns_bad_fork, &ran);
+    size_t cnt = 1;
+    dns_ip *ips = dns_lookup(task, "a..b", 0, 1, &cnt);
+    int32_t suspended = ran;
+    coro_sleep(task, 1);// 让出一次，fork 的协程跑掉
+    if (NULL != ips) {
+        FREE(ips);
+        LOG_ERROR("dns_lookup(a..b): expected NULL.");
+        return ERR_FAILED;
+    }
+    if (0 != cnt || 0 != suspended) {
+        LOG_ERROR("dns_lookup(a..b): expected cnt 0 and no suspend, got cnt %zu suspended %d.", cnt, suspended);
+        return ERR_FAILED;
+    }
     return ERR_OK;
 }
 
@@ -300,6 +328,75 @@ static int32_t _test_recv_any(task_ctx *task) {
     }
     return ERR_OK;
 }
+
+#if WITH_SSL
+// 带内升级防注入：客户端把升级请求与一条明文命令一次写过去，服务端 accept 回调里 coro_recv_any 收到请求后
+// coro_ssl_exchange 切换并等握手结果。两条同一次读到、都已解成包，后面那条在等握手期间投来：
+// 框架须丢掉它并关连接(coro_ssl_exchange 返回失败)，不交给收包回调。CUSTZ_FIXED 让两条解成两个包
+static int32_t _inject_exch = -1;
+static int32_t _inject_recved = 0;
+static void _inject_recved_cb(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client,
+                              uint8_t slice, void *data, size_t size) {
+    (void)task;
+    (void)sk;
+    (void)pktype;
+    (void)slice;
+    (void)data;
+    (void)size;
+    if (0 == client) {
+        _inject_recved++;
+    }
+}
+static void _inject_accepted(task_ctx *task, sock_ctx *sk, subtype_t pktype, const netaddr_ctx *peer) {
+    (void)pktype;
+    (void)peer;
+    size_t size = 0;
+    void *req = coro_recv_any(task, sk, &size, NULL);
+    if (NULL == req || 8 != size || 0 != memcmp(req, "starttls", 8)) {
+        _inject_exch = 2;
+        ev_close(&task->loader->netev, sk);
+        return;
+    }
+    _inject_exch = (ERR_OK == coro_ssl_exchange(task, sk, 0, evssl_query("server"))) ? 1 : 0;
+}
+static int32_t _test_ssl_inject(task_ctx *task) {
+    if (NULL == evssl_query("server")) {
+        return ERR_OK;// 证书没生成，main.c 已打过提示
+    }
+    int32_t base = _co_sessions(coro_task_co(task));
+    task_accepted(task, _inject_accepted);
+    task_recved(task, _inject_recved_cb);
+    uint64_t lsnid;
+    if (ERR_OK != task_listen(task, PACK_CUSTZ_FIXED, NULL, "127.0.0.1", SSL_INJECT_PORT, &lsnid,
+                              NETEV_ACCEPT | NETEV_SESS | NETEV_AUTHSSL)) {
+        LOG_ERROR("ssl_inject: task_listen %u failed.", SSL_INJECT_PORT);
+        return ERR_FAILED;
+    }
+    sock_ctx sk;
+    if (ERR_OK != coro_connect(task, PACK_CUSTZ_FIXED, NULL, "127.0.0.1", SSL_INJECT_PORT, 0, NULL, &sk)) {
+        ev_unlisten(&task->loader->netev, lsnid);
+        LOG_ERROR("ssl_inject: connect %u failed.", SSL_INJECT_PORT);
+        return ERR_FAILED;
+    }
+    // 4 字节大端长度头 + 载荷，两帧一次写入
+    static const char two[] = "\x00\x00\x00\x08" "starttls" "\x00\x00\x00\x04" "evil";// 分开写：\x04e 会被当成一个转义
+    (void)ev_send(&task->loader->netev, &sk, (void *)two, sizeof(two) - 1, 1);
+    for (int32_t i = 0; i < 300 && -1 == _inject_exch; i++) {
+        coro_sleep(task, 10);
+    }
+    ev_close(&task->loader->netev, &sk);
+    ev_unlisten(&task->loader->netev, lsnid);
+    for (int32_t i = 0; i < 100 && _co_sessions(coro_task_co(task)) > base; i++) {
+        coro_sleep(task, 20);
+    }
+    if (0 != _inject_exch || 0 != _inject_recved) {
+        LOG_ERROR("ssl_inject: expected exchange failed and nothing recved, got exch %d recved %d.",
+                  _inject_exch, _inject_recved);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+#endif
 
 // coro_bind_task：连上后留下一条 keep 条目，转给别的 task 时当场放掉
 // (转交后 CLOSE 投给新 task，本 task 再没有路径能删它)。
@@ -880,6 +977,20 @@ static void _startup_run(task_ctx *task) {
     if (task_isclosing(task)) {
         return;
     }
+    if (ERR_OK != _test_dns_bad_domain(task)) {
+        return;
+    }
+    if (task_isclosing(task)) {
+        return;
+    }
+#if WITH_SSL
+    if (ERR_OK != _test_ssl_inject(task)) {
+        return;
+    }
+    if (task_isclosing(task)) {
+        return;
+    }
+#endif
     if (ERR_OK != _test_bind_task(task, arg->httpport, arg->rpcname)) {
         return;
     }

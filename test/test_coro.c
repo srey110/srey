@@ -191,6 +191,34 @@ static void test_coro_fifo_head_only(CuTest *tc) {
     CuAssertIntEquals(tc, 1, a.woke);
     CuAssertIntEquals(tc, 2, b.woke);
 }
+// coro_waiting 只看不摘：没有条目、keep 留下的空条目、队头标签不同都返回 0，队头相同返回 1 且不唤醒它
+static void test_coro_waiting(CuTest *tc) {
+    co_owner o;
+    coro_ctx *co = _co_new(&o, 0);
+    co_waiter k, a, b;
+    int32_t none = coro_waiting(co, 5, 1);
+    _co_waiter_set(&k, 5, 1, 1, 0);
+    _co_spawn(co, _step_wait, &k);
+    coro_wake(co, 5, 1, NULL);
+    int32_t empty = coro_waiting(co, 5, 1);// keep 条目摘空后还在、队列为空
+    _co_waiter_set(&a, 6, 1, 0, 0);
+    _co_waiter_set(&b, 6, 2, 0, 0);
+    _co_spawn(co, _step_wait, &a);
+    _co_spawn(co, _step_wait, &b);
+    int32_t head = coro_waiting(co, 6, 1);
+    int32_t second = coro_waiting(co, 6, 2);// b 在等 2 但不在队头
+    int32_t woke = a.woke;
+    coro_wake(co, 6, 1, NULL);// 收尾按队头顺序唤醒，挂着的协程 coro_free 不回收
+    coro_wake(co, 6, 2, NULL);
+    coro_free(co);
+    CuAssertTrue(tc, 0 != a.woke && a.woke < b.woke);// woke 是醒来次序：队头 a 先醒
+    CuAssertIntEquals(tc, 0, none);
+    CuAssertTrue(tc, 0 != k.woke);
+    CuAssertIntEquals(tc, 0, empty);
+    CuAssertIntEquals(tc, 1, head);
+    CuAssertIntEquals(tc, 0, second);
+    CuAssertIntEquals(tc, 0, woke);
+}
 // ① keep 只在新建条目时定；③ 摘空且 !keep 才删
 static void test_coro_keep(CuTest *tc) {
     co_owner o;
@@ -779,6 +807,7 @@ static void test_coro_stack_fit(CuTest *tc) {
 void test_coro(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_coro_wait_wake);
     SUITE_ADD_TEST(suite, test_coro_fifo_head_only);
+    SUITE_ADD_TEST(suite, test_coro_waiting);
     SUITE_ADD_TEST(suite, test_coro_keep);
     SUITE_ADD_TEST(suite, test_coro_wake_all_order);
     SUITE_ADD_TEST(suite, test_coro_wake_all_grow);

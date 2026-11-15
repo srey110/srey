@@ -27,7 +27,6 @@
 #include <bcrypt.h>
 
 #define IS_LITTLE 1 // 主机字节序：Windows 各目标都是小端
-#define DLL_EXNAME "dll" // 动态库扩展名
 #define PATH_SEPARATOR '\\' // 路径分隔符
 #define PATH_SEPARATORSTR "\\" // 路径分隔符字符串
 #define PATH_LENS 1024 // 路径最大长度；取 1024 只为长路径不被截断，超过 MAX_PATH(260) 的路径文件 API 仍打不开

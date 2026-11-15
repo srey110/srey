@@ -41,7 +41,9 @@ static int32_t _push_registered_ssl(lua_State *lua, const char *name, evssl_ctx 
 /// <summary>
 /// 加载 PEM/DER 格式的 CA、证书和私钥，按 name 注册 SSL 上下文。
 /// 默认不验对端，安全级别用 OpenSSL 默认(1)：SHA1 这类弱摘要签的 CA 会被拒，要兼容就 seclevel(ctx, 0)。
-/// 公网客户端须显式 verify 开对端校验、host 设主机名，再按需 seclevel / min_proto 加固(同 evssl_new)
+/// 公网客户端须显式 verify 开对端校验、host 设主机名，再按需 seclevel / min_proto 加固(同 evssl_new)。
+/// 这四项建连时不加锁读，须在上下文投入使用前设好：在 startup.lua 顶层紧跟本函数设(那时还没有 task 在跑)，
+/// task 里注册的在拿它监听 / 建连之前设，之后别再改(改 host 会与建连并发、读到已释放的串)
 /// </summary>
 /// <param name="name" type="string">SSL 上下文注册名（字符串 key）</param>
 /// <param name="ca" type="string">CA 文件名（相对 cert 目录）；空串表示不加载</param>
@@ -70,7 +72,7 @@ static int32_t _lssl_cert_register(lua_State *lua) {
 #endif
 }
 /// <summary>
-/// 加载 PKCS12 格式证书文件，按 name 注册 SSL 上下文。默认校验与安全级别同 cert_register。
+/// 加载 PKCS12 格式证书文件，按 name 注册 SSL 上下文。默认校验、安全级别与各项设置的时机同 cert_register。
 /// p12 里附带的 CA 只当自己要发出的证书链、不进信任库，
 /// 用它开 SSL_VERIFY_PEER 验对端必然失败，要验对端用 cert_register 带 ca(同 evssl_p12_new)
 /// </summary>
@@ -114,7 +116,7 @@ static int32_t _lssl_query(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 设置 SSL 安全级别
+/// 设置 SSL 安全级别，设置时机见 cert_register
 /// </summary>
 /// <param name="evssl" type="lightuserdata">SSL 上下文指针</param>
 /// <param name="level" type="integer">安全级别 0-5；越界报错</param>
@@ -130,7 +132,7 @@ static int32_t _lssl_seclevel(lua_State *lua) {
     return 0;
 }
 /// <summary>
-/// 设置最低 TLS 协议版本
+/// 设置最低 TLS 协议版本，设置时机见 cert_register
 /// </summary>
 /// <param name="evssl" type="lightuserdata">SSL 上下文指针</param>
 /// <param name="version" type="TLS_VERSION">
@@ -157,10 +159,10 @@ static int32_t _lssl_min_proto(lua_State *lua) {
 #endif
 }
 /// <summary>
-/// 设置 SSL 上下文是否验证对端证书
+/// 设置 SSL 上下文是否验证对端证书，设置时机见 cert_register
 /// </summary>
 /// <param name="evssl" type="lightuserdata">SSL 上下文指针</param>
-/// <param name="mod" type="integer">SSL_VERIFY_* 掩码：0 不验证 / SSL_VERIFY_PEER 验对端 / 叠加 SSL_VERIFY_FAIL_IF_NO_PEER_CERT 强制对端出证书(mTLS)</param>
+/// <param name="mod" type="integer">SSL_VERIFY 掩码(define.lua)：NONE 不验证 / PEER 验对端 / 再叠加 FAIL_IF_NO_PEER_CERT 强制对端出证书(mTLS)</param>
 /// <returns>无</returns>
 static int32_t _lssl_verify(lua_State *lua) {
 #if WITH_SSL
@@ -174,7 +176,7 @@ static int32_t _lssl_verify(lua_State *lua) {
 }
 /// <summary>
 /// 设置客户端要连的主机名：握手时作 SNI 发出，开了 SSL_VERIFY_PEER 时还校验对端证书是签给它的，契约同 evssl_host。
-/// 只开 verify 只验证书链，公网客户端还须设它。只给作客户端用的上下文设，须在上下文投入使用前设好
+/// 只开 verify 只验证书链，公网客户端还须设它。只给作客户端用的上下文设，设置时机见 cert_register
 /// </summary>
 /// <param name="evssl" type="lightuserdata">SSL 上下文指针</param>
 /// <param name="host" type="string?">域名或 IP；nil 或空串清除</param>

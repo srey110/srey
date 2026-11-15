@@ -180,6 +180,7 @@ typedef struct fake_smtp_ctx {
     int32_t rsets;          // 服务端收到的 RSET 条数
     int32_t fail_rcpt;      // 1 = 下一条 RCPT 回 550（一次性），造一封失败的信
     int32_t fail_rset;      // 1 = 下一条 RSET 回 550（一次性），造 RSET 失败
+    int32_t mute_mail;      // 1 = 下一条 MAIL FROM 不回（一次性），造命令超时
     int32_t naccept;        // 已接受的连接数；第 2 条连接发带裸 LF 的问候
     int32_t ehlo_local;     // 收到 "EHLO localhost" 的次数
     int32_t ehlo_bad;       // EHLO 行里混进 CR / LF 的次数
@@ -282,6 +283,10 @@ static void _fake_cmd(task_ctx *task, sock_ctx *sk, fake_smtp_ctx *ctx, fake_con
         return;
     }
     if (0 == memcasecmp(line, "MAIL FROM:", 10)) {
+        if (0 != ctx->mute_mail) {
+            ctx->mute_mail = 0;
+            return;
+        }
         tag = _fake_tag(line, 'c');
         // 解不出编号也要算一次失败：_fake_tag 的失败值 -1 与"无事务"哨兵 -1 是同一个数，
         // 不在这里拦住的话 sender 会被写成 -1，此后 MAIL FROM 的 -1 != sender 永远为假、
@@ -662,6 +667,25 @@ static void _fake_startup_run(task_ctx *task) {
         || oldskid == ctx->smtp.sk.skid
         || ERR_OK != _fake_send(&ctx->smtp, "c7@t", "r7@t")) {
         LOG_ERROR("fake smtp: failed RSET should drop the connection and ping should reconnect.");
+        smtp_quit(&ctx->smtp);
+        return;
+    }
+    // MAIL FROM 没等到应答（超时）：直接关连接等确认、不补发 RSET（补发的会吃到迟到的旧应答），
+    // established 清零；ping 重连后照样能发。迟到应答撞上 RSET 的竞态本身难稳定造，这里钉超时后的状态
+    oldskid = ctx->smtp.sk.skid;
+    int32_t rsets = ctx->rsets;
+    uint32_t oldtmo = coro_timeout_set(task, TMO_NETREAD, 500);
+    ctx->mute_mail = 1;
+    int32_t sent = _fake_send(&ctx->smtp, "c7@t", "r7@t");
+    coro_timeout_set(task, TMO_NETREAD, oldtmo);
+    if (ERR_OK == sent
+        || 0 != ctx->smtp.established
+        || rsets != ctx->rsets
+        || ERR_OK != smtp_ping(&ctx->smtp)
+        || oldskid == ctx->smtp.sk.skid
+        || ERR_OK != _fake_send(&ctx->smtp, "c7@t", "r7@t")) {
+        LOG_ERROR("fake smtp: timed-out command should drop the connection without RSET (sent %d, rsets %d -> %d).",
+                  sent, rsets, ctx->rsets);
         smtp_quit(&ctx->smtp);
         return;
     }

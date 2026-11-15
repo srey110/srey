@@ -41,8 +41,8 @@
 --       else ctx.buf = nil end                                              -- STREAM_ABORT，只清理
 --   end)
 --   srey.on_recved(Route:recv_cb())   -- 等同 function(...) Route:net_recv(...) end，少一层变参闭包
---   -- 不必接 on_closed：流式路由的 CLOSE 清理已由 Route 自己经 srey.watch_closed 订阅，
---   -- 而 on_closed 是单槽、后注册者静默覆盖前者，接了反而会顶掉业务自己的回调
+--   -- 不必接 on_closed / closing：流式路由在连接断开与 task 关闭时的清理已由 Route 自己经
+--   -- srey.watch_closed / srey.watch_closing 订阅（可多个）；on_closed / closing 是单槽、后注册者静默覆盖前者，留给业务自己用
 -- ctx 字段:
 --   ctx.sk / ctx.client
 --   ctx.method  -- "GET" "POST" ...
@@ -77,9 +77,12 @@
 --   prefix/middleware/group 分组的中间件在注册阶段静态合并进路由条目，排在路由级中间件之前；
 --   分组与路由级里重复的中间件只留第一次出现的位置（同 Laravel）。各级前缀与路径之间自动补 '/'
 -- 注册期的错误（handler 不是函数、中间件名没 define、中间件不可调用、列表夹 nil、路径被拒）同 C 侧：
---   打 ERROR、这次注册作废、后续照常；define / use 返回 false，路由返回哑条目，分组中间件解析不了则组内路由全部作废
+--   打 ERROR、这次注册作废、后续照常；define / use / no_route / no_method 返回 false，路由返回哑条目，
+--   分组中间件解析不了则组内路由全部作废。分组中间件同 C 侧在注册路由时才按名解析，先建分组后 define 照样生效
 -- 与 Laravel 对齐的几处应答：路径在而方法不对（方法名不认识也算）回 405 并带 Allow，OPTIONS 则自动回 200 带 Allow；
 -- 请求带 Connection: close 或是 HTTP/1.0 没带 keep-alive 的，经 ctx 回完响应即关连接（同 C 侧 router）
+-- 不支持流水线：同一连接上的请求各自处理、不保证按序回包（handler 挂起时后到的可能先回），
+-- 客户端须等上一条响应再发下一条（同 srey.syn_send 的契约）
 
 local srey        = require("lib.srey")
 local http        = require("lib.http")
@@ -88,13 +91,12 @@ local _router_expect_continue = require("srey.router").expect_continue
 local url         = require("srey.url")
 local SLICE_TYPE = SLICE_TYPE
 -- 流式路由的中止通知，与 C 侧 ROUTER_STREAM_ABORT 同值。协议层不会产生这个 slice，
--- 由 router 自造：流没收齐就没了（连接断 / 同连接又来一个流式首帧 / 回调自己抛异常）
+-- 由 router 自造：流没收齐就没了（连接断 / 同连接又来一个流式首帧 / 回调自己抛异常 / task 关闭）
 local STREAM_ABORT = 0x80
 local type     = type
 local pcall    = pcall
 local tostring = tostring
 local assert   = assert
-local select   = select
 local pairs    = pairs
 local getmetatable = getmetatable
 local rawget   = rawget
@@ -141,10 +143,6 @@ local function _callable(v)
     local mt = getmetatable(v)
     return nil ~= mt and ("table" ~= type(mt) or nil ~= rawget(mt, "__call"))
 end
-local function _assert_callable(v, what)
-    assert(_callable(v), what .. " must be callable, got " .. type(v))
-    return v
-end
 
 -- ── GroupBuilder ──────────────────────────────────────────────────────────
 
@@ -152,35 +150,44 @@ end
 local GroupBuilder = {}
 GroupBuilder.__index = GroupBuilder
 
--- bad 为真表示链上有解析不了的中间件，用它分组注册的路由全部作废
-local function _gb_new(router, prefix, mws, bad)
-    return setmetatable({ _router = router, _prefix = prefix, _mws = mws, _bad = bad }, GroupBuilder)
+-- mws 存原样的中间件参数（名字或函数），n 记个数（中间夹 nil 也算进去，注册时照样报）；
+-- 注册路由时才按名解析（见 _ctx），同 C 侧
+local function _gb_new(router, prefix, mws)
+    return setmetatable({ _router = router, _prefix = prefix, _mws = mws }, GroupBuilder)
+end
+-- 复制 old 再追加变参，返回新表，old 不动
+local function _gb_mws_append(old, ...)
+    local mws = { n = old.n }
+    for i = 1, old.n do
+        mws[i] = old[i]
+    end
+    local args = table.pack(...)
+    for i = 1, args.n do
+        mws[mws.n + i] = args[i]
+    end
+    mws.n = mws.n + args.n
+    return mws
 end
 
 ---在当前分组基础上追加路径前缀，返回新 GroupBuilder（不修改原对象）
 ---@param p string 追加的路径前缀，如 "/api"
 ---@return GroupBuilder
 function GroupBuilder:prefix(p)
-    return _gb_new(self._router, _join(self._prefix, p), self._mws, self._bad)
+    return _gb_new(self._router, _join(self._prefix, p), self._mws)
 end
 
 ---在当前分组基础上追加中间件，返回新 GroupBuilder（不修改原对象）
 ---@param ... string|fun(ctx:Ctx, next:fun()) 中间件名称或函数
 ---@return GroupBuilder
 function GroupBuilder:middleware(...)
-    local mws = {}
-    for _, mw in ipairs(self._mws) do
-        mws[#mws + 1] = mw
-    end
-    local bad = self._router:_resolve_all(mws, ...)
-    return _gb_new(self._router, self._prefix, mws, self._bad or bad)
+    return _gb_new(self._router, self._prefix, _gb_mws_append(self._mws, ...))
 end
 
 ---在当前前缀和中间件上下文中执行路由注册闭包
 ---@param fn fun() 路由注册闭包
 function GroupBuilder:group(fn)
     local stack = self._router._stack
-    stack[#stack + 1] = { prefix = self._prefix, mws = self._mws, bad = self._bad }
+    stack[#stack + 1] = { prefix = self._prefix, mws = self._mws }
     local ok, err = pcall(fn)
     stack[#stack] = nil
     if not ok then error(err, 0) end
@@ -414,10 +421,12 @@ function Router.new()
     return r
 end
 
--- 自订阅连接关闭：流式请求上下文只有 _st_drop 能回收，而 srey.on_closed 是单槽、库抢不到，
--- 漏接就是每条没收齐的 chunked 请求常驻约 5KB 直到进程退出。业务仍可照常用 on_closed。
--- watch_closed 没有反注册，故整个模块只订一次：没有流式路由的 router 不占位，有的也只进弱键表
-function Router:_watch_closed_once()
+-- 自订阅连接关闭与 task 关闭：流式请求上下文只有 _st_drop 能回收，而 srey.on_closed / srey.closing 都是单槽、
+-- 库抢不到，漏接就是每条没收齐的 chunked 请求常驻约 5KB、on_chunk 也拿不到 ABORT 做清理。业务仍可照常用这两个。
+-- task 先于它的连接关掉，连接的 CLOSE 投不回来，在途的流只能在 task 关闭时一并投 ABORT（同 C 侧 router_free）。
+-- 这比 C 侧早（C 在 task 释放时才投），关闭中新到的流式首帧由 _st_begin 回 503，不开新流。
+-- 两个观察者都没有反注册，故整个模块只订一次：没有流式路由的 router 不占位，有的也只进弱键表
+function Router:_st_watch_once()
     stream_routers[self] = true
     if st_watching then
         return
@@ -429,6 +438,13 @@ function Router:_watch_closed_once()
             -- 就地同步摘表并投 ABORT（同 C 侧 router_closed_watch）：观察者与 on_chunk 按契约都不挂起，
             -- 起协程反而让清理排到业务的 on_closed 之后
             r:_st_drop(skid)
+        end
+    end)
+    srey.watch_closing(function()
+        for r in pairs(stream_routers) do
+            for skid in pairs(r._streams) do
+                r:_st_drop(skid)-- 遍历中把现有键置 nil 是允许的；on_chunk(ABORT) 不会新开流
+            end
         end
     end)
 end
@@ -464,22 +480,6 @@ function Router:_resolve(mw)
     return mw
 end
 
--- 变长中间件参数逐个解析后追加进 mws，返回有没有解析失败的。
--- 用 select("#") 而不是 #args：中间夹一个 nil 时 #args 可能只到 nil 之前，后面的中间件被一并丢掉
-function Router:_resolve_all(mws, ...)
-    local args = { ... }
-    local bad = false
-    for i = 1, select("#", ...) do
-        local fn = self:_resolve(args[i])
-        if nil == fn then
-            bad = true
-        else
-            mws[#mws + 1] = fn
-        end
-    end
-    return bad
-end
-
 -- 中间件追加进 mws；seen 里已有的跳过，同一个只留第一次出现的位置（同 Laravel）
 local function _mw_add(mws, seen, mw)
     if not seen[mw] then
@@ -488,7 +488,7 @@ local function _mw_add(mws, seen, mw)
     end
 end
 
--- 合并当前 group 栈的前缀与中间件（去重）；seen 交给调用方接着追加路由级中间件。
+-- 合并当前 group 栈的前缀与中间件（去重）；分组中间件在这里按名解析，seen 交给调用方接着追加路由级中间件。
 -- 末个返回值为真表示所在分组有解析不了的中间件
 function Router:_ctx()
     local prefix = ""
@@ -497,9 +497,14 @@ function Router:_ctx()
     local bad = false
     for _, frame in ipairs(self._stack) do
         prefix = _join(prefix, frame.prefix)
-        bad = bad or frame.bad
-        for _, mw in ipairs(frame.mws) do
-            _mw_add(mws, seen, mw)
+        local fmws = frame.mws
+        for i = 1, fmws.n do
+            local fn = self:_resolve(fmws[i])
+            if nil == fn then
+                bad = true
+            else
+                _mw_add(mws, seen, fn)
+            end
         end
     end
     return prefix, mws, seen, bad
@@ -604,7 +609,7 @@ end
 
 -- 流式路由注册
 function Router:_add_stream(method, path, on_chunk, extra_mws)
-    self:_watch_closed_once()
+    self:_st_watch_once()
     return self:_add_common(method, path, nil, on_chunk, extra_mws)
 end
 
@@ -645,16 +650,28 @@ function Router:use(mw)
     return true
 end
 
+-- no_route / no_method 共用：fn 为 nil 清除，不可调用打 ERROR、原设置保留
+function Router:_set_fallback(key, fn, what)
+    if nil ~= fn and not _callable(fn) then
+        ERROR("router: %s must be callable, got %s, registration rejected.", what, type(fn))
+        return false
+    end
+    self[key] = (nil ~= fn) and _compile_chain({ fn }) or nil
+    return true
+end
+
 ---设置 404 回退 handler；fn 为 nil 时清除。只跑这一个函数，不经全局 / 路由级中间件；ctx 带 path / query，没有 params
 ---@param fn fun(ctx:Ctx)?
+---@return boolean ok fn 不可调用时打 ERROR 返回 false，原设置保留
 function Router:no_route(fn)
-    self._no_route = (nil ~= fn) and _compile_chain({ _assert_callable(fn, "no_route handler") }) or nil
+    return self:_set_fallback("_no_route", fn, "no_route handler")
 end
 
 ---设置 405 回退 handler；fn 为 nil 时清除。OPTIONS 自动应答不走这里；中间件口径同 no_route，ctx 另带 allow（Allow 头的值）
 ---@param fn fun(ctx:Ctx)?
+---@return boolean ok 同 no_route
 function Router:no_method(fn)
-    self._no_method = (nil ~= fn) and _compile_chain({ _assert_callable(fn, "no_method handler") }) or nil
+    return self:_set_fallback("_no_method", fn, "no_method handler")
 end
 
 ---注册 GET 路由；同时接住 HEAD——HEAD 的语义就是"要 GET 的头不要体"，分开注册会让 HEAD 落 404。
@@ -733,7 +750,8 @@ function Router:any(path, handler, mws)
 end
 
 ---注册流式 POST 路由：请求体逐块交给 on_chunk，router 不缓存；只有 net_recv 认它。连接中途断开
----的清理已由本函数自订阅 CLOSE 接管，不必再把 closed 接到 on_closed。
+---的清理已由本函数自订阅 CLOSE 接管，不必再把 closed 接到 on_closed；task 关闭时在途的流同样投 STREAM_ABORT，
+---关闭中新到的 chunked 首帧回 503 并关连接（定长请求照常处理）。
 ---与普通路由的不同：中间件链只做准入，它 next 之后的后置处理在请求体到达前就跑完，拦不住已放行
 ---的流；响应由 on_chunk 自己写，到 SLICE_TYPE.END 未响应兜底 500；chunked 时 ctx.body 为 nil、
 ---请求体只从 data 取，slice == 0 那次 data 即 ctx.body。
@@ -759,16 +777,14 @@ end
 ---@param p string 路径前缀
 ---@return GroupBuilder
 function Router:prefix(p)
-    return _gb_new(self, p, {})
+    return _gb_new(self, p, { n = 0 })
 end
 
----返回 GroupBuilder，用于流式 :middleware():group() 中间件分组
+---返回 GroupBuilder，用于流式 :middleware():group() 中间件分组；名字在注册组内路由时才解析
 ---@param ... string|fun(ctx:Ctx, next:fun()) 中间件名称或函数
 ---@return GroupBuilder
 function Router:middleware(...)
-    local mws = {}
-    local bad = self:_resolve_all(mws, ...)
-    return _gb_new(self, "", mws, bad)
+    return _gb_new(self, "", _gb_mws_append({ n = 0 }, ...))
 end
 
 -- 通配段是路径余部，里面的 '/' 是真分隔符不能编码，只编码段内内容，空段与首尾斜杠原样留着——
@@ -1008,6 +1024,12 @@ function Router:_st_begin(sk, pack, client)
     -- 命中的不是流式路由：请求体正一块块往这边来，普通 handler 接不住，回 411 让客户端改用定长
     if not route.on_chunk then
         _reject_chunked(sk, ctx.method)
+        return
+    end
+    -- task 关闭中不再开流：关闭观察者只投那一次 ABORT，之后开的流没人收尾
+    if srey.isclosing() then
+        _send_fail(ctx.method, sk, 503)
+        srey.close(sk)
         return
     end
     local step = (route._chain_ver == self._mw_version) and route._step or _chain_of(self, route)

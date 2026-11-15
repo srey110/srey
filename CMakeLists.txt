@@ -53,9 +53,10 @@ add_compile_definitions(_GNU_SOURCE)
 if(SREY_WITH_LUA)
     add_compile_definitions(LUA_USE_POSIX)# 理由见 mk.sh
 endif()
-if(CMAKE_SYSTEM_NAME MATCHES "Darwin|FreeBSD")
+if(CMAKE_C_COMPILER_ID MATCHES "Clang")# 含 AppleClang；按编译器判，理由见 mk.sh
     add_compile_options(-Wno-unused-function)
-elseif(CMAKE_SYSTEM_NAME STREQUAL "AIX")
+endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "AIX")
     add_compile_options(-Wno-pointer-to-int-cast -Wno-int-to-pointer-cast)
     add_compile_definitions(_THREAD_SAFE)# errno 每线程一份，理由见 mk.sh
 elseif(CMAKE_SYSTEM_NAME STREQUAL "SunOS")
@@ -133,11 +134,11 @@ add_dependencies(srey tls_gate)
 
 # ── Third-party libs (tools/deps.py) ──────────────────────────────────────────
 # 库名带变体后缀「[d]_<x86|x64|arm64>」，规则同 mk.sh；对不上就报错，不静默链别的变体。
-# 架构判法同 mk.sh / deps.py：arm64/aarch64 算 arm64，i386/i686 或 x86_64 上指针 4 字节(32 位用户态或 m32)算 x86，其余都是 x64
+# 架构判法同 mk.sh / deps.py：arm64/aarch64 算 arm64，x86 系上指针 4 字节(32 位用户态或 m32)算 x86，其余都是 x64。
+# i386 也看指针宽度：Solaris / illumos 上 CMake 取 uname -p，64 位也报 i386
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
     set(_deps_arch arm64)
-elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(i386|i686)$" OR
-       (CMAKE_SIZEOF_VOID_P EQUAL 4 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$"))
+elseif(CMAKE_SIZEOF_VOID_P EQUAL 4 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(i386|i686|x86_64|amd64)$")
     set(_deps_arch x86)
 else()
     set(_deps_arch x64)

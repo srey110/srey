@@ -216,7 +216,12 @@ void sighandle(void(*cb)(int32_t, void *), void *data) {
     (void)SetConsoleCtrlHandler((PHANDLER_ROUTINE)_sighandler, TRUE);
 #else
     signal(SIGPIPE, SIG_IGN);//忽略 SIGPIPE：对端关闭后继续写入不会导致进程崩溃
-    signal(SIGHUP, _sighandler);//终端断开或控制进程退出
+    // 终端断开或控制进程退出。启动时已被置成忽略(nohup)就保留；SIGINT / SIGQUIT 不跟，后台起再 kill -INT 停要能用
+    struct sigaction old;
+    if (0 != sigaction(SIGHUP, NULL, &old)
+        || SIG_IGN != old.sa_handler) {
+        signal(SIGHUP, _sighandler);
+    }
     signal(SIGINT, _sighandler);//键盘中断（Ctrl-C）
     signal(SIGQUIT, _sighandler);//键盘退出（Ctrl-\）
     signal(SIGABRT, _sighandler);//异常中止（abort）

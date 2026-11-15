@@ -311,10 +311,10 @@ static int32_t _lcore_connect(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 对已有明文连接发起 SSL 升级握手。带内升级(先回一条明文再切 SSL)用 send_ssl
+/// 对已有明文连接发起 SSL 升级握手，契约同 ev_ssl。带内升级(先回一条明文再切 SSL)用 send_ssl
 /// </summary>
 /// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
-/// <param name="client" type="integer">1 表示客户端握手，0 表示服务端；其余值报错</param>
+/// <param name="client" type="integer">1 表示客户端握手，0 表示服务端；其余值报错。须与连接方向一致(同 ev_ssl)</param>
 /// <param name="evssl" type="lightuserdata">SSL 上下文；为 nil 时直接失败，传了别的类型报错</param>
 /// <returns type="boolean">命令已投出 true，执行结果不回传(握手结果走 SSLEXCHANGED)；sk 无效或 evssl 为 nil 时 false</returns>
 static int32_t _lcore_ssl_exchange(lua_State *lua) {
@@ -371,7 +371,7 @@ static int32_t _lcore_send(lua_State *lua) {
 /// 对端的握手报文可能被当明文读走。本包之后到握手完成前不得再 send
 /// </summary>
 /// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
-/// <param name="client" type="integer">1 表示客户端握手，0 表示服务端；其余值报错</param>
+/// <param name="client" type="integer">1 表示客户端握手，0 表示服务端；其余值报错。须与连接方向一致(同 ev_ssl)</param>
 /// <param name="evssl" type="lightuserdata?">SSL 上下文；nil 时不发、返回 false，传了别的类型报错</param>
 /// <param name="data" type="string|lightuserdata">明文尾包，不可为空；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
@@ -745,6 +745,13 @@ static int32_t _lcore_task_list(lua_State *lua) {
     return 1;
 }
 /// <summary>
+/// 编译时是否开了 Lua 字节码缓存（ENABLE_LUA_BYTECACHE）
+/// </summary>
+/// <returns type="boolean">开了为 true</returns>
+static int32_t _lcore_with_bytecache(lua_State *lua) {
+    return lpub_rtn_bool(lua, ENABLE_LUA_BYTECACHE);
+}
+/// <summary>
 /// 获取全局内存分配/释放统计（MEMORY_CHECK 关闭时全为 0）。
 /// Lua 虚拟机的分配次数按调度轮并入，正在跑的这一轮（含本 task 当前这一轮）不在其中，运行期是近似值（见 memory.h mem_stat）
 /// </summary>
@@ -805,6 +812,7 @@ LUAMOD_API int luaopen_core(lua_State *lua) {
 
         { "task_list", _lcore_task_list },
         { "mem_stat", _lcore_mem_stat },
+        { "with_bytecache", _lcore_with_bytecache },
 
         { NULL, NULL },
     };

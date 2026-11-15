@@ -7,6 +7,11 @@
 // 前提：会抛 Lua 错误的调用路径上没有 __try / __finally 与 C++ 析构（Lua 与 lbind 全是 C）；
 // 工程开 /CETCOMPAT（影子栈）前要先复测
 
+// 不支持 C 模块：Lua 静态编进 srey、不导出 lua_*，载入的 C 模块要么找不到符号、要么带进第二份运行时。
+// luaconf 在 Windows 上默认开 LUA_DL_DLL，这里关掉，与 Unix 构建（不定义 LUA_USE_DLOPEN）一致；
+// 顺带 Windows 上路径模板里的 '!'（可执行目录）也不再展开，同 Unix
+#undef LUA_DL_DLL
+
 // 是否启用：置 0 退回 Lua 默认的 setjmp / longjmp。放这里而不进 config.h：本头被 Lua 核心每个 .c 引入，
 // 引 config.h 会把 os.h 与 Windows 系统头一并带进去（os.h 的空宏 UNUSED 会顶掉 Lua 自己的 UNUSED(x)）
 #ifndef ENABLE_LUA_FAST_JMP

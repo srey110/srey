@@ -92,8 +92,8 @@ static int32_t _lstm_update(lua_State *lua) {
 /// 把 stm.copy 交出的 ctx lightuserdata 包装为 reader
 /// </summary>
 /// <param name="handle" type="lightuserdata">stm_ctx 指针 (跨 task 传递; 调用方已 stm_grab)</param>
-/// <returns type="userdata">reader 对象; 出作用域自动 release。调用 r(func, ud?) 读快照：没更新返回 false、不调 func；
-/// 否则调 func(lud, sz, ud) 并返回 true 加 func 的返回值。lud 只在下次读或 reader 回收前有效，不要存下来；
+/// <returns type="userdata">reader 对象; 出作用域自动 release。调用 r(func, ud?) 读快照：没更新返回 false、
+/// writer 已释放返回 nil(此后每次都是)，这两种都不调 func；否则调 func(lud, sz, ud) 并返回 true 加 func 的返回值。lud 只在下次读或 reader 回收前有效，不要存下来；
 /// func 经 pcall 调用，里面不能挂起(srey.sleep / syn_* 之类)</returns>
 static int32_t _lstm_newreader(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
@@ -116,46 +116,46 @@ static int32_t _lstm_deletereader(lua_State *lua) {
     box->lastcopy = NULL;
     return 0;
 }
-// reader.__call(func, ud?): 读快照. 若与 lastcopy 相同则 return false 不调 func;
+// reader.__call(func, ud?): 读快照. writer 已释放返 nil、与 lastcopy 相同返 false, 都不调 func;
 // 否则调 func(lud, sz, ud?) 处理数据, 透传 func 返回值并在首位补 boolean true
 static int32_t _lstm_read(lua_State *lua) {
     lua_stm_data *box = _lstm_checkreader(lua);
     luaL_checktype(lua, 2, LUA_TFUNCTION);
     stm_data *snap = stm_grab_data_since(box->ctx, box->lastcopy);
+    // 先判 writer 已释放(ctx->data 为 NULL)再比 lastcopy：没读过就释放时 lastcopy 也是 NULL，顺序反了会当成没更新
+    if (NULL == snap) {
+        stm_ungrab_data(box->lastcopy);
+        box->lastcopy = NULL;
+        return lpub_rtn_nil(lua, 1);
+    }
     if (snap == box->lastcopy) {
         // 与上次相同, 未更新
         return lpub_rtn_bool(lua, 0);
     }
-    if (NULL != snap) {
-        // box 一直留在槽 1：本帧的栈槽就是 GC 根，回调里清掉 reader 引用也回收不了它。
-        // 栈 [box, func, ud] 上再压 (func, lud, sz, ud) 调用，结果接在 ud 之后，最后 true 顶替 ud
-        lua_settop(lua, 3);
-        lua_pushvalue(lua, 2);
-        lua_pushlightuserdata(lua, snap->data);
-        lua_pushinteger(lua, (lua_Integer)snap->sz);
-        lua_pushvalue(lua, 3);
-        // pcall 而非 call 且交接延后到此:重入读不释放本次 snap(防 UAF),抛错也走交接(防 snap 引用泄漏)。
-        // 回调里重入读换过 lastcopy 的,内层拿到的不比本次旧,以它为准、本次 snap 只放引用
-        stm_data *prev = box->lastcopy;
-        int32_t st = lua_pcall(lua, 3, LUA_MULTRET, 0);
-        if (box->lastcopy == prev) {
-            stm_ungrab_data(prev);
-            box->lastcopy = snap;
-        } else {
-            stm_ungrab_data(snap);
-        }
-        if (LUA_OK != st) {
-            return lua_error(lua);
-        }
-        luaL_checkstack(lua, 1, NULL);// MULTRET 的结果可能已把本帧栈位用满
-        lua_pushboolean(lua, 1);
-        lua_replace(lua, 3);
-        return lua_gettop(lua) - 2;
+    // box 一直留在槽 1：本帧的栈槽就是 GC 根，回调里清掉 reader 引用也回收不了它。
+    // 栈 [box, func, ud] 上再压 (func, lud, sz, ud) 调用，结果接在 ud 之后，最后 true 顶替 ud
+    lua_settop(lua, 3);
+    lua_pushvalue(lua, 2);
+    lua_pushlightuserdata(lua, snap->data);
+    lua_pushinteger(lua, (lua_Integer)snap->sz);
+    lua_pushvalue(lua, 3);
+    // pcall 而非 call 且交接延后到此:重入读不释放本次 snap(防 UAF),抛错也走交接(防 snap 引用泄漏)。
+    // 回调里重入读换过 lastcopy 的,内层拿到的不比本次旧,以它为准、本次 snap 只放引用
+    stm_data *prev = box->lastcopy;
+    int32_t st = lua_pcall(lua, 3, LUA_MULTRET, 0);
+    if (box->lastcopy == prev) {
+        stm_ungrab_data(prev);
+        box->lastcopy = snap;
+    } else {
+        stm_ungrab_data(snap);
     }
-    // writer 已释放, ctx->data=NULL
-    stm_ungrab_data(box->lastcopy);
-    box->lastcopy = NULL;
-    return lpub_rtn_bool(lua, 0);
+    if (LUA_OK != st) {
+        return lua_error(lua);
+    }
+    luaL_checkstack(lua, 1, NULL);// MULTRET 的结果可能已把本帧栈位用满
+    lua_pushboolean(lua, 1);
+    lua_replace(lua, 3);
+    return lua_gettop(lua) - 2;
 }
 // srey.stm
 LUAMOD_API int luaopen_stm(lua_State *lua) {

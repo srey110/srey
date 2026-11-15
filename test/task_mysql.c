@@ -137,6 +137,10 @@ static int32_t _vector_read(mysql_ctx *mysql) {
         major = major * 10 + (ver[i] - '0');
     }
     mysql_reader_free(reader);
+    if (0 == major) {// 探测本身失败不能当成版本低跳过
+        LOG_ERROR("mysql version unreadable.");
+        return ERR_FAILED;
+    }
     if (major < 9) {
         LOG_INFO("mysql VECTOR needs 9.0+, case skipped (major %d).", major);
         return ERR_OK;
@@ -874,7 +878,7 @@ static int32_t _quit_ping(mysql_ctx *mysql) {
     return _concurrent_query(mysql);
 }
 // 错口令建链：返回失败、本次新建的执行器已就地拆掉。走 TLS 时服务端做完整认证、回 ERR 1045 记到 mysql_erro；
-// 明文时 caching_sha2 要完整认证而本实现不做 RSA，客户端自己判失败，没有错误码可查。
+// 明文时 caching_sha2 要完整认证，没配公钥也没允许去要，客户端自己判失败，没有错误码可查。
 // 排在明文重连之后：万一失败的认证清了服务端口令缓存，也不拖累明文的快速认证
 static int32_t _auth_fail(task_ctx *task, task_mysql_args *arg) {
     struct evssl_ctx *evssl = NULL;

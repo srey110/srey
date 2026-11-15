@@ -47,6 +47,10 @@ typedef struct overlap_tcp_ctx {
     DWORD bytes_r;          // WSARecv接收字节数
     DWORD bytes_s;          // WSASend发送字节数
     DWORD flag;             // WSARecv标志
+    int32_t spolling;       // ol_s 上在途的是等可写的 AFD 轮询而不是 WSASend，取消目标随之不同，见 _iocp_cancel_io
+    SOCKET base;            // AFD 轮询认的 base socket；取不到为 INVALID_SOCK，等可写退回 0 字节探针
+    HANDLE afd;             // 所属 watcher 的 AFD 句柄；NULL 同上
+    afd_poll_info spoll;    // 在途 AFD 轮询的参数兼结果，完成前不能动
 #if WITH_SSL
     SSL *ssl;               // SSL会话（NULL表示普通TCP）
     struct evssl_ctx *evssl; // 待升级的SSL上下文（发送完毕后升级）
@@ -114,6 +118,9 @@ void *_evpub_sk_new(void *args) {
     oltcp->ol_s.sk = oltcp->ol_r.sk;// 读写两个 OVERLAPPED 共用同一连接标识,ol_r 为权威
     oltcp->ol_s.ev_cb = _olp_on_send_cb;
     oltcp->status = STATUS_NONE;
+    oltcp->spolling = 0;
+    oltcp->base = INVALID_SOCK;// 加入 watcher 时由 _olp_afd_bind 设
+    oltcp->afd = NULL;
 #if WITH_SSL
     oltcp->ssl = NULL;
     oltcp->evssl = NULL;
@@ -143,6 +150,9 @@ void _evpub_sk_free(void *sk) {
 void _evpub_sk_clear(void *sk)  {
     overlap_tcp_ctx *oltcp = UPCAST((evsock_ctx *)sk, overlap_tcp_ctx, ol_r);
     oltcp->status = STATUS_NONE;
+    oltcp->spolling = 0;
+    oltcp->base = INVALID_SOCK;
+    oltcp->afd = NULL;
 #if WITH_SSL
     FREE_SSL(oltcp->ssl);
     oltcp->evssl = NULL;
@@ -203,7 +213,7 @@ void _iocp_disconnect(evsock_ctx *evsk) {
         } else {
             _iocp_sk_shutdown(evsk, SHUT_RD);
         }
-        CancelIoEx((HANDLE)evsk->sk.fd, NULL);
+        _iocp_cancel_io(evsk);
     } else {
         // UDP 不冲发送队列：积压的 datagram 随关闭直接丢弃
         overlap_udp_ctx *udp = UPCAST(evsk, overlap_udp_ctx, ol_r);
@@ -212,6 +222,42 @@ void _iocp_disconnect(evsock_ctx *evsk) {
         }
         BIT_SET(udp->status, STATUS_ERROR);
         CancelIoEx((HANDLE)evsk->sk.fd, NULL);
+    }
+}
+void _iocp_cancel_io(evsock_ctx *evsk) {
+    CancelIoEx((HANDLE)evsk->sk.fd, NULL);
+    if (SOCK_STREAM != evsk->type) {
+        return;
+    }
+    overlap_tcp_ctx *oltcp = UPCAST(evsk, overlap_tcp_ctx, ol_r);
+    if (0 != oltcp->spolling) {
+        CancelIoEx(oltcp->afd, &oltcp->ol_s.overlapped);
+    }
+}
+// 连接加入 watcher 后记下 AFD 轮询要用的句柄。base socket 先取 SIO_BASE_HANDLE，个别 LSP 故意让它失败，
+// 再试 SIO_BSP_HANDLE_POLL；都取不到就留 INVALID_SOCK，等可写退回 0 字节探针(只告警一次)
+static void _olp_afd_bind(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
+    static atomic_t warned = 0;
+    oltcp->afd = watcher->afd;
+    oltcp->base = INVALID_SOCK;
+    if (NULL == watcher->afd) {
+        return;
+    }
+    SOCKET fd = oltcp->ol_r.sk.fd;
+    SOCKET base = INVALID_SOCK;
+    DWORD bytes = 0;
+    if (0 == WSAIoctl(fd, SIO_BASE_HANDLE, NULL, 0, &base, (DWORD)sizeof(base), &bytes, NULL, NULL)) {
+        oltcp->base = base;
+        return;
+    }
+    if (0 == WSAIoctl(fd, SIO_BSP_HANDLE_POLL, NULL, 0, &base, (DWORD)sizeof(base), &bytes, NULL, NULL)
+        && base != fd) {
+        oltcp->base = base;
+        return;
+    }
+    if (ATOMIC_CAS(&warned, 0, 1)) {
+        LOG_WARN("fd %d: no base socket for AFD poll, a peer that stops reading will make the thread busy-loop.",
+                 (int32_t)fd);
     }
 }
 // 调用accept回调，返回值非ERR_OK则拒绝连接
@@ -300,10 +346,8 @@ static inline int32_t _olp_post_recv(overlap_tcp_ctx *oltcp) {
     }
     return ERR_OK;
 }
-// 提交WSASend异步发送请求；同步失败按对端中止记(同 _olp_post_recv)
-// 0 字节 wakeup：
-// 成功 → kernel 有空间 → continue
-// EWOULDBLOCK → kernel 满 → 0 字节 post pend → 等到 buffer 空出空间触发完成 → continue
+// 投 0 字节 WSASend，完成后在 _olp_on_send_cb 里发：只用来"排一次发送"，它不论发送缓冲满不满都立即完成，
+// 写不出去后等可写一律用 _olp_post_send_wait。同步失败按对端中止记(同 _olp_post_recv)；
 // 本地已在关就不投、按失败返回，理由同 _olp_post_recv
 static inline int32_t _olp_post_send(overlap_tcp_ctx *oltcp) {
     if (BIT_CHECK(oltcp->status, STATUS_ERROR)) {
@@ -323,6 +367,37 @@ static inline int32_t _olp_post_send(overlap_tcp_ctx *oltcp) {
             return ERR_FAILED;
         }
     }
+    return ERR_OK;
+}
+// 写不出去后等可写，契约同 _olp_post_send(之后恰好回一次 _olp_on_send_cb)。0 字节 WSASend 拿来等可写会空转：
+// 它立即完成、再写还是写不进，对端不读时 watcher 吃满一核。这里改在 ol_s 上投 \Device\Afd 轮询，
+// 真正可写或对端 RST 才完成；它投在 AFD 句柄上，取消要对那个句柄取消，见 _iocp_cancel_io。
+// IO_STATUS_BLOCK 借 OVERLAPPED 头两个字段、ApcContext 也传它，完成包的 lpOverlapped 就是 ol_s。
+// 没有 AFD 句柄或 base socket 的连接退回 0 字节探针
+static inline int32_t _olp_post_send_wait(overlap_tcp_ctx *oltcp) {
+    if (NULL == oltcp->afd
+        || INVALID_SOCK == oltcp->base) {
+        return _olp_post_send(oltcp);
+    }
+    if (BIT_CHECK(oltcp->status, STATUS_ERROR)) {
+        return ERR_FAILED;
+    }
+    ZERO(&oltcp->ol_s.overlapped, sizeof(oltcp->ol_s.overlapped));
+    oltcp->spoll.timeout.QuadPart = INT64_MAX;
+    oltcp->spoll.count = 1;
+    oltcp->spoll.exclusive = 0;
+    oltcp->spoll.handles[0].handle = (HANDLE)oltcp->base;
+    oltcp->spoll.handles[0].events = AFD_POLL_SEND | AFD_POLL_ABORT;
+    oltcp->spoll.handles[0].status = 0;
+    LONG st = _exfuncs.ntioctl(oltcp->afd, NULL, NULL, &oltcp->ol_s.overlapped, &oltcp->ol_s.overlapped,
+                               IOCTL_AFD_POLL, &oltcp->spoll, (ULONG)sizeof(oltcp->spoll),
+                               &oltcp->spoll, (ULONG)sizeof(oltcp->spoll));
+    if (0 != st
+        && AFD_STATUS_PENDING != st) {// 同步失败不进完成队列
+        _evpub_mark_close(&oltcp->status, ERR_FAILED);
+        return ERR_FAILED;
+    }
+    oltcp->spolling = 1;
     return ERR_OK;
 }
 // 本轮攒发链的挂与摘，只用于明文。位与"在 watcher->flushes 上"一一对应，置清位只在这两处；
@@ -345,6 +420,17 @@ static inline int32_t _olp_wantwrite(overlap_tcp_ctx *oltcp) {
     if (!BIT_CHECK(oltcp->status, STATUS_SENDING)) {
         BIT_SET(oltcp->status, STATUS_SENDING);
         if (ERR_OK != _olp_post_send(oltcp)) {
+            BIT_REMOVE(oltcp->status, STATUS_SENDING);
+            return ERR_FAILED;
+        }
+    }
+    return ERR_OK;
+}
+// 同 _olp_wantwrite，用在写不出去后等可写(理由见 _olp_post_send_wait)
+static inline int32_t _olp_wantwrite_wait(overlap_tcp_ctx *oltcp) {
+    if (!BIT_CHECK(oltcp->status, STATUS_SENDING)) {
+        BIT_SET(oltcp->status, STATUS_SENDING);
+        if (ERR_OK != _olp_post_send_wait(oltcp)) {
             BIT_REMOVE(oltcp->status, STATUS_SENDING);
             return ERR_FAILED;
         }
@@ -379,7 +465,7 @@ static int32_t _olp_ssl_do_handshake(watcher_ctx *watcher, overlap_tcp_ctx *oltc
         return 0;
     case 2://WANT_WRITE
         if (isrecv) {
-            if (ERR_OK != _olp_wantwrite(oltcp)) {
+            if (ERR_OK != _olp_wantwrite_wait(oltcp)) {
                 *err = ERR_FAILED;
                 return 1;
             }
@@ -388,7 +474,7 @@ static int32_t _olp_ssl_do_handshake(watcher_ctx *watcher, overlap_tcp_ctx *oltc
                 return 1;
             }
         } else {
-            if (ERR_OK != _olp_post_send(oltcp)) {
+            if (ERR_OK != _olp_post_send_wait(oltcp)) {
                 *err = ERR_FAILED;
                 return 1;
             }
@@ -410,7 +496,7 @@ static inline int32_t _olp_tcp_recv(watcher_ctx *watcher, overlap_tcp_ctx *oltcp
     size_t nread;
 #if WITH_SSL
     // 有挂起的应用写就不能进 SSL_read(理由见 evpub.h 的 STATUS_WPEND_SSL)。
-    // ol_r 不重投、只置 NORECV:发送探针在途,冲完由 _olp_tcp_send 恢复收
+    // ol_r 不重投、只置 NORECV:发送侧在等可写,冲完由 _olp_tcp_send 恢复收
     if (BIT_CHECK(oltcp->status, STATUS_WPEND_SSL)) {
         BIT_SET(oltcp->status, STATUS_NORECV);
         return ERR_OK;
@@ -436,9 +522,9 @@ static inline int32_t _olp_tcp_recv(watcher_ctx *watcher, overlap_tcp_ctx *oltcp
         return ERR_FAILED;
     }
 #if WITH_SSL
-    if (BIT_CHECK(oltcp->status, STATUS_KEYUPDATE_WRITE)) {// 处理 KeyUpdate 触发可写
+    if (BIT_CHECK(oltcp->status, STATUS_KEYUPDATE_WRITE)) {// KeyUpdate 响应写不出去，等可写再冲
         BIT_SET(oltcp->status, STATUS_NORECV);
-        return _olp_wantwrite(oltcp);
+        return _olp_wantwrite_wait(oltcp);
     }
 #endif
     return _olp_post_recv(oltcp);
@@ -576,13 +662,13 @@ static void _olp_close_final(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     _evpub_sockel_remove(watcher, oltcp->ol_r.sk.fd);
     pool_push(&watcher->pool, &oltcp->ol_r, 0);
 }
-// 关闭TCP连接：WSASend 探针在途就取消它、等它完成再收尾，否则立即收尾。
-// 必须取消：对端不再读时探针在满缓冲上永远不完成，连接就一直收不了尾
+// 关闭TCP连接：ol_s 上有在途 IO(0 字节探针或等可写的 AFD 轮询)就取消它、等它完成再收尾，否则立即收尾。
+// 必须取消：对端不再读时 AFD 轮询永远不完成，连接就一直收不了尾；轮询投在 AFD 句柄上，要对那个句柄取消
 static inline void _olp_on_recv_cb_err(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     BIT_SET(oltcp->status, STATUS_ERROR);
     if (BIT_CHECK(oltcp->status, STATUS_SENDING)) {
         BIT_SET(oltcp->status, STATUS_REMOVE);
-        CancelIoEx((HANDLE)oltcp->ol_s.sk.fd, &oltcp->ol_s.overlapped);
+        CancelIoEx(0 != oltcp->spolling ? oltcp->afd : (HANDLE)oltcp->ol_s.sk.fd, &oltcp->ol_s.overlapped);
     } else {
         _olp_close_final(watcher, oltcp);
     }
@@ -620,7 +706,7 @@ static void _olp_on_recv_cb(watcher_ctx *watcher, evsock_ctx *evsk, DWORD bytes)
         return;
     }
 #if WITH_SSL
-    // 方向 B 的出口，机制见 _olp_tcp_send 上方。KEYUPDATE_WRITE 时 ol_s 归探针、要先等它冲完；
+    // 方向 B 的出口，机制见 _olp_tcp_send 上方。KEYUPDATE_WRITE 时 ol_s 归等可写的轮询、要先等它冲完；
     // STATUS_ERROR 时业务已在 recv_cb 里关了连接。
     // 失败必须走 _iocp_disconnect：此处 ol_r 已重投在途，而 _olp_on_recv_cb_err 在 !SENDING 时会立即 pool_push
     if (BIT_CHECK(oltcp->status, STATUS_KEYUPDATE_READ)
@@ -656,7 +742,7 @@ static int32_t _olp_ssl_exchange_trigger(watcher_ctx *watcher, overlap_tcp_ctx *
         case 2://等待写就绪（WANT_WRITE)
             *sending = 1;
             BIT_SET(oltcp->status, STATUS_AUTHSSL);
-            if (ERR_OK != _olp_post_send(oltcp)) {
+            if (ERR_OK != _olp_post_send_wait(oltcp)) {
                 *sending = 0;
                 return ERR_FAILED;
             }
@@ -719,7 +805,7 @@ void _iocp_try_ssl_exchange(watcher_ctx *watcher, evsock_ctx *evsk, struct evssl
     }
 #endif
 }
-// 排空 buf_s；没排完就投 0 字节探针接力。
+// 排空 buf_s；没排完(写不进了)就投 AFD 轮询等可写接力。
 // SSL 块是数据期 TLS1.3 的方向 B(SSL_write 说要先读)，与 usock.c 同条件同序：置 KEYUPDATE_READ
 // 并交还 SENDING,靠 _olp_on_recv_cb 收到数据后接力。
 // 顺序不能颠倒：SSL 块必须在 "0 == cnt" 之前,否则残留的 KEYUPDATE_READ 会永久拦住后续发送。
@@ -774,14 +860,14 @@ static inline int32_t _olp_tcp_send(watcher_ctx *watcher, overlap_tcp_ctx *oltcp
     if (0 == cnt) {
 #if WITH_SSL
         // 防止接收侧(_olp_tcp_recv)因 STATUS_SENDING 守卫未触发;
-        // 此时 ol_r 仍在途(NORECV=0),投 ol_s 探针接力,等可写后由 flush 冲出
+        // 此时 ol_r 仍在途(NORECV=0),在 ol_s 上等可写,可写后由 flush 冲出
         if (NULL != oltcp->ssl
             && SSL_want_write(oltcp->ssl)) {
-            if (ERR_OK != _olp_post_send(oltcp)) {
+            if (ERR_OK != _olp_post_send_wait(oltcp)) {
                 return ERR_FAILED;
             }
             BIT_SET(oltcp->status, STATUS_KEYUPDATE_WRITE);
-            return ERR_OK;// SENDING 保持,探针接力
+            return ERR_OK;// SENDING 保持,轮询接力
         }
         if (BIT_CHECK(oltcp->status, STATUS_SSLEXCHANGE)) {// 数据发完，切ssl
             BIT_REMOVE(oltcp->status, STATUS_SSLEXCHANGE);
@@ -798,10 +884,10 @@ static inline int32_t _olp_tcp_send(watcher_ctx *watcher, overlap_tcp_ctx *oltcp
         BIT_REMOVE(oltcp->status, STATUS_SENDING);
         return ERR_OK;
     }
-    return _olp_post_send(oltcp);
+    return _olp_post_send_wait(oltcp);
 }
 #if WITH_SSL
-// KeyUpdate 写就绪探针完成:重试 SSL_read 冲刷响应;没冲完重投探针,冲完按 NORECV 恢复 ol_r
+// KeyUpdate 等可写的轮询完成:重试 SSL_read 冲刷响应;没冲完再等可写,冲完按 NORECV 恢复 ol_r
 static int32_t _olp_ssl_keyupdate_flush(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     size_t nread;
     int32_t rtn = buffer_from_sock(&oltcp->buf_r, oltcp->ol_r.sk.fd, &nread, 0, _evpub_sock_read, oltcp->ssl);
@@ -814,8 +900,8 @@ static int32_t _olp_ssl_keyupdate_flush(watcher_ctx *watcher, overlap_tcp_ctx *o
     if (0 != _evpub_recvbuf_full(&oltcp->buf_r, oltcp->ol_r.sk.fd)) {
         return ERR_FAILED;
     }
-    if (SSL_want_write(oltcp->ssl)) {// 没冲完,直接重投探针:SENDING 已持有,不走 wantwrite
-        return _olp_post_send(oltcp);
+    if (SSL_want_write(oltcp->ssl)) {// 没冲完,直接再等可写:SENDING 已持有,不走 wantwrite
+        return _olp_post_send_wait(oltcp);
     }
     BIT_REMOVE(oltcp->status, STATUS_KEYUPDATE_WRITE);
     if (!BIT_CHECK(oltcp->status, STATUS_NORECV)) {// 发侧（_olp_tcp_send）检测出的,此时 STATUS_NORECV = 0
@@ -847,6 +933,7 @@ static inline void _olp_send_close_tcp(watcher_ctx *watcher, overlap_tcp_ctx *ol
 // 否则会对已发过 close_notify 的连接 SSL_write(口径同 usock.c 的 _usk_tcp_send)
 static void _olp_on_send_cb(watcher_ctx *watcher, evsock_ctx *evsk, DWORD bytes) {
     overlap_tcp_ctx *oltcp = UPCAST(evsk, overlap_tcp_ctx, ol_s);
+    oltcp->spolling = 0;// 轮询完成时状态同 WSASend：成功为 0，被取消或出错非 0，落进下面同一套分支
     // 判定顺序同 _olp_on_recv_cb：先认本地关，再认传输错
     if (BIT_CHECK(oltcp->status, STATUS_ERROR)) {
         _olp_send_close_tcp(watcher, oltcp);
@@ -874,7 +961,7 @@ static void _olp_on_send_cb(watcher_ctx *watcher, evsock_ctx *evsk, DWORD bytes)
                     _olp_send_close_tcp(watcher, oltcp);
                     return;
                 }
-                if (BIT_CHECK(oltcp->status, STATUS_KEYUPDATE_WRITE)) {// 没冲完,探针已重投,等下次完成
+                if (BIT_CHECK(oltcp->status, STATUS_KEYUPDATE_WRITE)) {// 没冲完,轮询已重投,等下次完成
                     return;
                 }
             }
@@ -890,7 +977,7 @@ static void _olp_on_send_cb(watcher_ctx *watcher, evsock_ctx *evsk, DWORD bytes)
         return;
     }
 }
-// 攒发链上摘下的明文连接同步发一次。排空会清 SENDING，发不完它自己投探针接力；
+// 攒发链上摘下的明文连接同步发一次。排空会清 SENDING，发不完它自己投轮询等可写接力；
 // 失败时 ol_s 上没有在途 IO，交还 SENDING 再断开
 static inline void _olp_flush_send(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     BIT_SET(oltcp->status, STATUS_SENDING);
@@ -916,7 +1003,7 @@ void _iocp_add_bufs_trypost(watcher_ctx *watcher, evsock_ctx *evsk, off_buf_ctx 
     obuf_que_push(&oltcp->buf_s, buf);
 #if WITH_SSL
     // 方向 B 挂着未完成的 SSL_write，投探针只是空转；数据留队等 _olp_on_recv_cb 那次重试。
-    // 方向 A(KEYUPDATE_WRITE)不用判：探针在途时下面的 SENDING 已挡住；recv_cb 里探针还没投、这里先投了的，
+    // 方向 A(KEYUPDATE_WRITE)不用判：ol_s 在途时下面的 SENDING 已挡住；recv_cb 里还没投、这里先投了探针的，
     // 完成后 _olp_on_send_cb 也是先冲 KeyUpdate 再发 buf_s
     if (BIT_CHECK(oltcp->status, STATUS_KEYUPDATE_READ)) {
         return;
@@ -934,7 +1021,7 @@ void _iocp_add_bufs_trypost(watcher_ctx *watcher, evsock_ctx *evsk, off_buf_ctx 
         return;
     }
     // 明文挂进攒发链，等本轮派发完由 _iocp_flush_pending 同步发，同一轮的多条合成一次 WSASend；
-    // SSL 照旧投 0 字节探针，等可写再发
+    // SSL 投 0 字节探针，排到完成回调里发；写不进了再改等可写
     if (NULL == TCP_SSL(oltcp)) {
         _olp_flush_link(watcher, oltcp);
         return;
@@ -1042,7 +1129,7 @@ static void _olp_on_connect_cb(watcher_ctx *watcher, evsock_ctx *evsk, DWORD byt
         case 1:// WANT_READ
             break;
         case 2:// WANT_WRITE
-            if (ERR_OK != _olp_wantwrite(oltcp)) {// 注册写
+            if (ERR_OK != _olp_wantwrite_wait(oltcp)) {// 握手报文写不出去，等可写
                 _iocp_disconnect(&oltcp->ol_r);
                 return;
             }
@@ -1109,6 +1196,7 @@ void _iocp_add_conn_inloop(watcher_ctx *watcher, struct evsock_ctx *evsk, netadd
         pool_push(&watcher->pool, &oltcp->ol_r, 0);
         return;
     }
+    _olp_afd_bind(watcher, oltcp);
     _evpub_sockel_add(watcher, evsk);
     if (ERR_OK != _olp_post_connect(oltcp, addr)) {
         _olp_call_conn_cb(watcher->ev, oltcp, ERR_FAILED);
@@ -1273,6 +1361,7 @@ void _iocp_add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) 
     skpool_args skargs = { .sk = { .fd = fd, .index = watcher->index }, .cbs = &lsn->cbs, .ud = &lsn->ud };
     evsock_ctx *evsk = pool_pop(&watcher->pool, &skargs, 0);
     overlap_tcp_ctx *oltcp = UPCAST(evsk, overlap_tcp_ctx, ol_r);
+    _olp_afd_bind(watcher, oltcp);
     BIT_SET(oltcp->status, STATUS_ESTABLISHED);// accept 出来的连接已连通
     if (BIT_CHECK(oltcp->ud.flags, UD_SESS)) {
         oltcp->ud.sess = oltcp->ol_r.sk.skid;// 在收第一个包之前设好，事后再设的话先到的包会落到回调上
@@ -1809,6 +1898,7 @@ void _iocp_add_fd_inloop(watcher_ctx *watcher, evsock_ctx *evsk) {
     _evpub_sockel_add(watcher, evsk);
     if (SOCK_STREAM == evsk->type) {
         overlap_tcp_ctx *tcp = UPCAST(evsk, overlap_tcp_ctx, ol_r);
+        _olp_afd_bind(watcher, tcp);
         if (ERR_OK != _olp_post_recv(tcp)) {
             _evpub_sockel_remove(watcher, evsk->sk.fd);
             pool_push(&watcher->pool, evsk, 0);

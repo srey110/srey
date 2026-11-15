@@ -44,7 +44,8 @@ void *pgsql_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
 int32_t pgsql_init(pgsql_ctx *pg, const char *ip, uint16_t port, struct evssl_ctx *evssl,
     const char *user, const char *password, const char *database);
 /// <summary>
-/// 更新 pgsql 连接的用户名和密码
+/// 更新 pgsql 连接的用户名和密码，下次连接生效。连上之后再改，须确知本连接上没有命令或重连在途
+/// (重连的握手在网络线程上读它)；pgsql_set_db / pgsql_set_protocol 同此要求
 /// </summary>
 /// <param name="pg">pgsql_ctx 指针</param>
 /// <param name="user">新用户名</param>
@@ -52,7 +53,7 @@ int32_t pgsql_init(pgsql_ctx *pg, const char *ip, uint16_t port, struct evssl_ct
 /// <returns>ERR_OK 成功；任一项超 63 字节时返回 ERR_FAILED，用户名与密码均保持原值</returns>
 int32_t pgsql_set_userpwd(pgsql_ctx *pg, const char *user, const char *password);
 /// <summary>
-/// 更新目标数据库名
+/// 更新目标数据库名，下次连接生效；连上之后再改的要求同 pgsql_set_userpwd
 /// </summary>
 /// <param name="pg">pgsql_ctx 指针</param>
 /// <param name="database">新数据库名</param>
@@ -66,7 +67,8 @@ int32_t pgsql_set_db(pgsql_ctx *pg, const char *database);
 const char *pgsql_get_db(pgsql_ctx *pg);
 /// <summary>
 /// 设置启动时请求的协议次版本，下次连接生效。0 为 3.0（默认，同 libpq）；2 为 3.2，取消密钥变长（PostgreSQL 18 起）。
-/// 服务端不支持 3.2 时经 NegotiateProtocolVersion 自动降到 3.0；不认版本协商的老代理会直接拒连，确认链路支持再开
+/// 服务端不支持 3.2 时经 NegotiateProtocolVersion 自动降到 3.0；不认版本协商的老代理会直接拒连，确认链路支持再开。
+/// 连上之后再改的要求同 pgsql_set_userpwd
 /// </summary>
 /// <param name="pg">pgsql_ctx</param>
 /// <param name="minor">0 或 2</param>

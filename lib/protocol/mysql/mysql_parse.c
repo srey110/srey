@@ -123,11 +123,12 @@ char *_mysql_payload_first(mysql_ctx *mysql, buffer_ctx *buf, char *stk, size_t 
     return _mysql_payload(mysql, buf, payload_lens, status);
 }
 // OK 包尾部的 session-state-change：服务端切换当前库（USE / COM_INIT_DB / 存储过程内切库）都经此回带，
-// 是 client.database 的权威来源。SERVER_SESSION_STATE_CHANGED 只会由接受了 CLIENT_SESSION_TRACK 的
-// 服务端置位，故该位本身即可判定尾部是 lenenc 布局，不必再看协商结果；老服务端不置位,尾部整段跳过。
+// 是 client.database 的权威来源；新库名只挂到 *database，由收应答的一方经 mysql_record 落，超时没人收的晚到应答不能改它。
+// SERVER_SESSION_STATE_CHANGED 只会由接受了 CLIENT_SESSION_TRACK 的服务端置位，故该位本身即可判定尾部是 lenenc 布局，
+// 不必再看协商结果；老服务端不置位,尾部整段跳过。
 // 本段只是可选信息，任何不自洽都当"没带"放弃（只有 lenenc 前缀非法时 _mysql_get_lenenc 打一条日志）：
 // 读长度一律走 _mysql_get_lenenc（缓冲不够它返 ERR_FAILED），读出来的长度再与剩余字节比过才用
-static void _mpack_ok_track(mysql_ctx *mysql, binary_ctx *breader) {
+static void _mpack_ok_track(binary_ctx *breader, char **database) {
     int32_t rtn;
     uint64_t lens = _mysql_get_lenenc(breader, &rtn);
     if (ERR_OK != rtn
@@ -162,17 +163,18 @@ static void _mpack_ok_track(mysql_ctx *mysql, binary_ctx *breader) {
                 return;
             }
             name = binary_get_binary(breader, (size_t)lens);
-            if (ERR_OK != copy_bounded(name, (size_t)lens, mysql->client.database,
-                                              sizeof(mysql->client.database), 1)) {
-                LOG_ERROR("mysql tracked schema exceeds %zu bytes: %"PRIu64", keep the old one.",
-                          sizeof(mysql->client.database) - 1, lens);
+            if (lens > MYSQL_DB_LENS) {// 装不进 client.database
+                LOG_ERROR("mysql tracked schema exceeds %d bytes: %"PRIu64", keep the old one.", MYSQL_DB_LENS, lens);
+            } else {
+                FREE(*database);
+                *database = dup_zero(name, (size_t)lens);
             }
         }
         binary_offset(breader, next);
     }
 }
 int32_t _mpack_ok_parse(mysql_ctx *mysql, binary_ctx *breader,
-    uint64_t *affected_rows, uint64_t *last_id, int16_t *status_flags) {
+    uint64_t *affected_rows, uint64_t *last_id, int16_t *status_flags, char **database) {
     int32_t _rtn;
     uint64_t affected = _mysql_get_lenenc(breader, &_rtn);
     if (ERR_OK != _rtn) {
@@ -189,8 +191,9 @@ int32_t _mpack_ok_parse(mysql_ctx *mysql, binary_ctx *breader,
     binary_get_skip(breader, 2);// warnings：本库不用，只推进读位置
     mysql->in_trans = BIT_CHECK(flags, SERVER_STATUS_IN_TRANS) ? 1 : 0;
     mysql->autocommit = BIT_CHECK(flags, SERVER_STATUS_AUTOCOMMIT) ? 1 : 0;
-    if (BIT_CHECK(flags, SERVER_SESSION_STATE_CHANGED)) {
-        _mpack_ok_track(mysql, breader);
+    if (NULL != database
+        && BIT_CHECK(flags, SERVER_SESSION_STATE_CHANGED)) {
+        _mpack_ok_track(breader, database);
     }
     binary_get_skip(breader, binary_remain(breader));
     SET_PTR(affected_rows, affected);
@@ -251,7 +254,7 @@ static mpack_ctx *_mpack_simple_response(mysql_ctx *mysql, binary_ctx *breader, 
     if (MYSQL_OK == first) {
         mpack->pack_type = MPACK_OK;
         // COM_INIT_DB / COM_PING / COM_STMT_RESET 不会有后续结果集，status_flags 不用回带（in_trans 已在里面更新）
-        if (ERR_OK != _mpack_ok_parse(mysql, breader, &mpack->affected_rows, &mpack->last_id, NULL)) {
+        if (ERR_OK != _mpack_ok_parse(mysql, breader, &mpack->affected_rows, &mpack->last_id, NULL, &mpack->database)) {
             BIT_SET(*status, PROT_ERROR);
             _mysql_pkfree(mpack);
             return NULL;
@@ -314,7 +317,7 @@ static inline eof_final _mpack_check_final(mysql_ctx *mysql, binary_ctx *breader
     binary_get_skip(breader, 1);
     int16_t status_flags;
     int32_t rtn = BIT_CHECK(mysql->client.caps, CLIENT_DEPRECATE_EOF)
-        ? _mpack_ok_parse(mysql, breader, NULL, NULL, &status_flags)
+        ? _mpack_ok_parse(mysql, breader, NULL, NULL, &status_flags, &mysql->mpack->database)
         : _mpack_eof(breader, &status_flags);
     if (ERR_OK != rtn) {
         return EOF_FINAL_BROKEN;
@@ -703,7 +706,8 @@ static mpack_ctx *_mpack_resultset_response(mysql_ctx *mysql, buffer_ctx *buf, b
             mpack = _mpack_new();
             mpack->pack_type = MPACK_OK;
             int16_t status_flags;
-            if (ERR_OK != _mpack_ok_parse(mysql, breader, &mpack->affected_rows, &mpack->last_id, &status_flags)) {
+            if (ERR_OK != _mpack_ok_parse(mysql, breader, &mpack->affected_rows, &mpack->last_id, &status_flags,
+                                          &mpack->database)) {
                 BIT_SET(*status, PROT_ERROR);
                 _mysql_pkfree(mpack);
                 return NULL;
@@ -906,9 +910,9 @@ mpack_ctx *_mpack_parser(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *breader,
         mpack = _mpack_simple_response(mysql, breader, status);
         if (NULL != mpack
             && MPACK_OK == mpack->pack_type
+            && NULL == mpack->database
             && !EMPTYSTR(mysql->pending_db)) {
-            // pending_db 与 client.database 等长，且 pending_db 在 mysql_pack_selectdb 已校验过，装得下
-            safe_fill_str(mysql->client.database, sizeof(mysql->client.database), mysql->pending_db);
+            mpack->database = dup_zero(mysql->pending_db, strlen(mysql->pending_db));
         }
         break;
     case MYSQL_PING:

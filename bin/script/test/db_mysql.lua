@@ -375,7 +375,10 @@ runner.run(function(t)
     if vrs and vrs[1] then
         ver = select(2, vrs[1]:string("v", true))
     end
-    if (tonumber(tostring(ver):match("^(%d+)%.")) or 0) < 9 then
+    local vmajor = tonumber(tostring(ver):match("^(%d+)%."))
+    if not vmajor then
+        t:fail("VECTOR: select version() 取不到版本 " .. tostring(ver))-- 探测失败不能当成版本低跳过
+    elseif vmajor < 9 then
         printd("[db_mysql] VECTOR needs MySQL 9.0+, case skipped (version %s)", tostring(ver))
     else
         local function _check_vector(label, rs)

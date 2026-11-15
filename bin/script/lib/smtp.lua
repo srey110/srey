@@ -61,14 +61,13 @@ function ctx:reset()
     return srey.serial_ret(false, self.serial(self._reset, self))
 end
 -- "一条命令、一个往返、应答判 250" 的固定形状，_reset 与 _ping 共用。
--- RCPT 是文件头说的那个例外（多收件人各判一次），不走这里
+-- RCPT 是文件头说的那个例外（多收件人各判一次），不走这里。
+-- 各命令一律经 _send_wait：没等到应答就关连接等确认（同 C 侧 _smtp_cmd2）
 ---@param packer fun(smtp:userdata):lightuserdata,integer 组包方法，如 smtp.pack_reset
 ---@return boolean ok 应答为 250 时 true
 function ctx:_cmd_ok(packer)
-    srey._check_wait("srey.syn_send")-- 先查再组包：syn_send 的守卫抛错时不替调用方放包
-    local sk = self.smtp:sock_id()
     local cmd, csize = packer(self.smtp)
-    local pack = srey.syn_send(sk, cmd, csize, 0)
+    local pack = self:_send_wait(cmd, csize)
     if nil == pack then
         return false
     end
@@ -86,30 +85,31 @@ function ctx:_ping()
 end
 
 ---信封：MAIL FROM → RCPT TO × N → DATA，拿到 354 返回 true，正文由调用方接着发
----@param sk userdata 连接标识
 ---@param mail any mail_ctx 邮件对象
 ---@return boolean ok 每步应答码都符合预期时 true（MAIL/RCPT 判 250/251，DATA 判 354）
-function ctx:_envelope(sk, mail)
+function ctx:_envelope(mail)
+    -- 发件人与收件人都在第一次挂起前取完，和刚组好的正文是同一份
+    local addrs = mail:addrs_get()
     local cmd, csize = self.smtp:pack_from(mail:from_get())
     if not cmd then
         return false
     end
-    local pack = srey.syn_send(sk, cmd, csize, 0)
+    local pack = self:_send_wait(cmd, csize)
     if nil == pack or not self.smtp:check_ok(pack) then
         return false
     end
-    for _, addr in ipairs(mail:addrs_get()) do
+    for _, addr in ipairs(addrs) do
         cmd, csize = self.smtp:pack_rcpt(addr)
         if not cmd then
             return false
         end
-        pack = srey.syn_send(sk, cmd, csize, 0)
+        pack = self:_send_wait(cmd, csize)
         if nil == pack or not self.smtp:check_codes(pack, RCPT_CODES) then
             return false
         end
     end
     cmd, csize = self.smtp:pack_data()
-    pack = srey.syn_send(sk, cmd, csize, 0)
+    pack = self:_send_wait(cmd, csize)
     return nil ~= pack and self.smtp:check_code(pack, "354")
 end
 ---内部邮件发送流程（不含 reset）：走信封与正文；任一步失败即返回
@@ -118,28 +118,28 @@ end
 ---@param bsize integer 正文长度
 ---@return boolean ok 信封各步与正文的 250 都符合预期时 true
 function ctx:_send(mail, body, bsize)
-    local sk = self.smtp:sock_id()
-    if not self:_envelope(sk, mail) then
+    if not self:_envelope(mail) then
         utils.ud_free(body)
         return false
     end
-    local pack = srey.syn_send(sk, body, bsize, 0)
+    local pack = self:_send_wait(body, bsize)
     return nil ~= pack and self.smtp:check_ok(pack)
 end
 
----发送邮件：投递成功不发 reset（正文收到 250 时服务端已清空事务）；投递失败才 reset，
+---发送邮件：投递成功不发 reset（正文收到 250 时服务端已清空事务）；应答码不对才 reset，
 ---清掉服务端留下的半截信封以便复用连接。reset 也失败即就地拆掉连接（代次前进、established 清零），
----下一封信要么先 ping() 重连要么直接失败
----@param mail any mail_ctx 邮件对象
+---下一封信要么先 ping() 重连要么直接失败。某条命令没等到应答（超时 / 断开）时连接已就地拆掉，
+---补发的 reset 打在已失效的连接上当场失败（同 C 侧 smtp_send）
+---@param mail any mail_ctx 邮件对象；返回前不得改动或释放（发送期间多次挂起）
 ---@return boolean ok 邮件投递成功 true。只反映这封邮件的成败，不反映连接状态——
----投递失败且补发的 reset 也失败时连接已被拆掉
+---有命令没等到应答，或投递失败且补发的 reset 也失败时，连接已被拆掉
 function ctx:send(mail)
     return srey.serial_ret(false, self.serial(self._sendmail, self, mail))
 end
 -- 锁覆盖 _send + 失败时的 reset：RSET 清的是本次投递留下的半截信封，与发送是同一笔事。
 -- 分开各包一次的话，别人的 MAIL FROM 会挤在中间被我们的 RSET 清掉
 function ctx:_sendmail(mail)
-    srey._check_wait("srey.syn_send")-- 理由同 _cmd_ok
+    srey._check_wait("srey.syn_send")-- 先查再组正文：后面 _send_wait 抛错只放它那条命令，正文没人放
     -- 先组正文再开信封(同 C 侧 smtp_send)：取不到熵时 pack 返 nil，此时还没进事务，连接不动、不发 RSET
     local body, bsize = mail:pack()
     if nil == body then
@@ -157,7 +157,7 @@ end
 ---内部 QUIT 命令（不关闭 socket，供 quit 调用）
 ---@param sk userdata 连接标识
 function ctx:_quit(sk)
-    srey._check_wait("srey.syn_send")-- 理由同 _cmd_ok
+    srey._check_wait("srey.syn_send")-- 先查再组包：syn_send 的守卫抛错时不替调用方放包
     local cmd, csize = self.smtp:pack_quit()
     local pack = srey.syn_send(sk, cmd, csize, 0)
     if nil ~= pack then

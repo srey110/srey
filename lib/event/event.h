@@ -39,7 +39,7 @@ void ev_free(ev_ctx *ctx);
 ///   IOCP 上其余 AcceptEx 投不出去只落 WARN、照返 ERR_OK，之后补投；Unix 上监听要到各 event 线程上注册，
 ///   某个线程注册失败只落一条 ERROR，该线程从此不收连接，id 照旧有效。
 ///   有 SO_REUSEPORT 的平台上监听一律带它：同一 ip:port 再 listen 一次(本进程或同用户的别的进程)不报端口被占，
-///   Linux 上新连接在几个监听间分摊，macOS / BSD 上全落到后建的那个</returns>
+///   Linux 与 FreeBSD 12+(SO_REUSEPORT_LB)上新连接在几个监听间分摊，macOS 与其余 BSD 上全落到后建的那个</returns>
 int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
     cbs_ctx *cbs, ud_cxt *ud, const int32_t *thrs, uint32_t nthrs, uint64_t *id);
 /// <summary>
@@ -61,11 +61,14 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
 /// <summary>
 /// 切换为SSL链接。启用 SSL 时 业务须等 ssl握手完成回调后才能 ev_send。
 /// 切换那一刻接收缓冲里若还有没被解包吃掉的明文，不切，打 WARN 并关连接(CLOSE_TYPE_LOCAL，同解析错误)：
-/// 留着会和解密出的数据拼在一起，被当成 TLS 内的数据
+/// 留着会和解密出的数据拼在一起，被当成 TLS 内的数据。
+/// 已解成包交给上层的拦不住：发起切换后、握手完成回调之前收到的数据都是升级前的明文(握手完成回调先于 TLS 内的数据)，
+/// 上层须丢掉并关连接，否则对端在升级命令后面拼的明文会被当成升级后的数据
 /// </summary>
 /// <param name="ctx">ev_ctx</param>
 /// <param name="sk">连接标识</param>
-/// <param name="client">1 作为客户端, 0 作为服务端</param>
+/// <param name="client">1 作为客户端, 0 作为服务端；须与连接方向一致(连出去的 1、接进来的 0)：
+///   它同时改写连接的方向，之后各回调收到的 client 与协议解包方向都按它</param>
 /// <param name="evssl">evssl_ctx, 必须非 NULL (NULL 时返 ERR_FAILED)</param>
 /// <returns>ERR_OK 只表示命令已投递，执行结果不回传：事件线程上拒收时，已是 SSL 连接、重复请求、未连通打 WARN，已在关的静默忽略；
 ///   evssl 为 NULL 或 fd 为 INVALID_SOCK 时 ERR_FAILED</returns>
@@ -82,7 +85,7 @@ int32_t ev_ssl(ev_ctx *ctx, sock_ctx *sk, int32_t client, struct evssl_ctx *evss
 /// <param name="data">明文尾包</param>
 /// <param name="len">数据长度, 不可为 0</param>
 /// <param name="copy">1 拷贝数据 不自动释放, 0 不拷贝数据 自动释放</param>
-/// <param name="client">1 作为客户端, 0 作为服务端</param>
+/// <param name="client">1 作为客户端, 0 作为服务端；须与连接方向一致(同 ev_ssl)</param>
 /// <param name="evssl">evssl_ctx, 必须非 NULL (NULL 时返 ERR_FAILED)</param>
 /// <returns>ERR_OK 命令已投递; 参数非法或未启用 SSL 时返 ERR_FAILED, 此时 copy 为 0 的 data 已被释放。
 ///   命令在事件线程内的执行结果不回传</returns>

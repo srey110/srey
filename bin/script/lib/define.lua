@@ -39,6 +39,13 @@ TLS_VERSION = {
     TLS1_2 = 0x0303,
     TLS1_3 = 0x0304
 }
+-- 对端证书校验掩码；用于 srey.ssl 的 verify()，值同 OpenSSL 的 SSL_VERIFY_*
+---@enum SSL_VERIFY
+SSL_VERIFY = {
+    NONE = 0x00,
+    PEER = 0x01,                -- 验对端证书
+    FAIL_IF_NO_PEER_CERT = 0x02 -- 叠加在 PEER 上：服务端强制对端出证书(mTLS)
+}
 -- SSL 证书文件格式
 ---@enum SSLFILE_TYPE
 SSLFILE_TYPE = {

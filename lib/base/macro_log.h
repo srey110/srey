@@ -75,8 +75,8 @@ typedef enum log_level {
 /// <param name="...">变参</param>
 void slog(int32_t lv, const char *fmt, ...);
 /// <summary>
-/// ASSERTAB 专用：先把调用栈打到 stderr，再排空日志队列，把 abort 原因与调用栈写进日志文件；
-/// 无日志文件时不重复写（ASSERTAB 已打到 stderr），只把缓冲刷出去。声明放这一层的理由同 slog。
+/// 给 ASSERTAB 与其他"记完原因就 abort"的路径用：先把调用栈打到 stderr，再排空日志队列，把 abort 原因与调用栈写进日志文件；
+/// 无日志文件时不重复写（调用方须已自己打到 stderr，同 ASSERTAB），只把缓冲刷出去。声明放这一层的理由同 slog。
 /// 尽力而为——不保证落盘，但每一步都有上限，不会把崩溃卡成挂起。可并发调用、可重复调用，
 /// 各种情形下分别做什么见实现里的分支注释
 /// </summary>

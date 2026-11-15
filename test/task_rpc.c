@@ -482,8 +482,8 @@ static void _check_group_switch(task_ctx *task) {
     ASSERTAB(NULL == rt && 0 == ATOMIC_GET(&_sw_bad), "group listener must reject connections once its head exited");
 }
 static void _ws_hs(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client,
-                   int32_t erro, void *data, size_t lens) {
-    (void)task; (void)sk; (void)pktype; (void)client; (void)data; (void)lens;
+                   int32_t erro, void *data, size_t lens, uint64_t sess) {
+    (void)task; (void)sk; (void)pktype; (void)client; (void)data; (void)lens; (void)sess;
     if (ERR_OK == erro) {
         ATOMIC_ADD(&_ws_handshaked, 1);
     }

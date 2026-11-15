@@ -1,7 +1,7 @@
 -- 初始化 MySQL：补建 test1 库；建立 bin/script/test/db_mysql.lua 用到的 test_bind 表。
 -- test 库与 admin 用户已由 docker-compose 的 MYSQL_DATABASE / MYSQL_USER 自动创建。
--- 用户使用默认的 caching_sha2_password 插件。srey 明文连接不做 RSA 公钥交换，服务端缓存冷时(如容器重启后)
--- 完整认证须走 TLS；C / Lua 测试都先经 TLS 登录一次，之后的明文连接走缓存的快速认证。
+-- 用户使用默认的 caching_sha2_password 插件。服务端缓存冷时(如容器重启后)完整认证要走 TLS 或明文下的
+-- RSA 公钥交换；C / Lua 测试都先经 TLS 登录一次，之后的明文连接走缓存的快速认证。
 
 -- 安装 query_attributes 组件，提供 mysql_query_attribute_string() 等函数，
 -- 测试代码（task_mysql.c / bin/script/test/db_mysql.lua）的 INSERT 使用它读取绑定参数。

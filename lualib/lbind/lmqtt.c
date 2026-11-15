@@ -181,7 +181,7 @@ static int32_t _lmqtt_props_reset(lua_State *lua) {
 /// 同步等待 TCP（含 SSL 握手）就绪；lib/mqtt.lua 的 connect 已经代调，用它就别再等一次
 /// </summary>
 /// <param name="version" type="integer">协议版本 mqtt_protversion，只收 MQTT_311(4) / MQTT_50(5)，其余报错</param>
-/// <param name="sslname" type="string?">已注册的 SSL 上下文 name；省略或 "" 表示明文</param>
+/// <param name="sslname" type="string?">已注册的 SSL 上下文 name；省略或 "" 表示明文；查不到时打 WARN、按失败返回</param>
 /// <param name="ip" type="string">对端 IP</param>
 /// <param name="port" type="integer">对端端口</param>
 /// <param name="netev" type="integer?">事件订阅掩码，默认 0</param>
@@ -198,6 +198,7 @@ static int32_t _lmqtt_try_connect(lua_State *lua) {
         evssl = evssl_query(sslname);
 #endif
         if (NULL == evssl) {
+            LOG_WARN("ssl_query not find ssl name %s.", sslname);
             // 失败也推一个连接标识,个数与成功路径一致;调用方只判 sk.valid
             return lpub_push_sock_invalid(lua);
         }
@@ -234,7 +235,7 @@ static int32_t _lmqtt_ws_bind(lua_State *lua) {
 /// </summary>
 /// <param name="version" type="integer">协议版本，只收 MQTT_311(4) / MQTT_50(5)，其余报错</param>
 /// <param name="cleanstart" type="integer">CleanStart/CleanSession 标志</param>
-/// <param name="keepalive" type="integer">心跳间隔秒数</param>
+/// <param name="keepalive" type="integer">心跳间隔秒数，只写进报文：PINGREQ 由业务按间隔自己发，本库不代发</param>
 /// <param name="clientid" type="string">客户端 id</param>
 /// <param name="user" type="string?">用户名；nil 不携带</param>
 /// <param name="password" type="string?">密码；nil 不携带</param>
@@ -486,7 +487,7 @@ static int32_t _lmqtt_pack_pong(lua_State *lua) {
     return lpub_rtn_lud(lua, pack, lens);
 }
 /// <summary>
-/// 构造 DISCONNECT 包
+/// 构造 DISCONNECT 包。MQTT 3.1.1 只由客户端发；服务端要断开 3.1.1 客户端直接关连接，不发它
 /// </summary>
 /// <param name="version" type="integer">协议版本，只收 MQTT_311(4) / MQTT_50(5)，其余报错</param>
 /// <param name="reason" type="integer?">Reason Code（MQTT 5.0），3.1.1 时忽略，默认 0</param>
@@ -874,6 +875,19 @@ static int32_t _lmqtt_disconnect(lua_State *lua) {
     return 1;
 }
 /// <summary>
+/// 解析 AUTH 可变报头（仅 MQTT 5.0），增强认证 / 重新认证按原因码分流；认证数据等属性用 pack_props 取
+/// </summary>
+/// <param name="pack" type="lightuserdata">mqtt_pack_ctx 指针</param>
+/// <returns type="integer?">Reason Code：0x00 成功、0x18 继续认证、0x19 重新认证；剩余长度为 0 时按协议为 0；非 AUTH 报文返回 nil</returns>
+static int32_t _lmqtt_auth(lua_State *lua) {
+    mqtt_pack_ctx *pack = _lmqtt_pack_of(lua, MQTT_AUTH);
+    if (NULL == pack) {
+        return lpub_rtn_nil(lua, 1);
+    }
+    lua_pushinteger(lua, ((mqtt_reason_varhead *)pack->varhead)->reason);
+    return 1;
+}
+/// <summary>
 /// 返回指定协议版本、报文类型和原因码对应的可读字符串；3.1.1 的 CONNACK 返回码 1~5 与 5.0 不是一张表，版本须按报文取
 /// </summary>
 /// <param name="version" type="integer">协议版本，只收 MQTT_311(4) / MQTT_50(5)，其余报错；收到的包用 pack_version 取</param>
@@ -925,6 +939,7 @@ LUAMOD_API int luaopen_mqtt(lua_State *lua) {
         { "suback", _lmqtt_suback },
         { "unsuback", _lmqtt_unsuback },
         { "disconnect", _lmqtt_disconnect },
+        { "auth", _lmqtt_auth },
         { "reason", _lmqtt_reason },
         { "pack_connect", _lmqtt_pack_connect },
         { "pack_connack", _lmqtt_pack_connack },

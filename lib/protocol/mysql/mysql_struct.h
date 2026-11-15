@@ -66,9 +66,9 @@ typedef struct mysql_ctx {
     mysql_server_param server; // 服务器握手参数
     mysql_client_param client; // 客户端连接参数
     char version[64];        // 服务器版本字符串
-    // COM_INIT_DB 待提交库名，响应 OK 后写入 client.database。服务端支持 CLIENT_SESSION_TRACK
+    // COM_INIT_DB 待提交库名，响应 OK 时挂到 mpack->database。服务端支持 CLIENT_SESSION_TRACK
     // (MySQL 5.7+，握手时与 server.caps 求交)时 query("USE x") 也会经 OK 包尾部的
-    // session-state-change 回带、由 _mpack_ok_track 更新 client.database；老服务端不置
+    // session-state-change 回带、由 _mpack_ok_track 挂上；老服务端不置
     // SERVER_SESSION_STATE_CHANGED，那时只有本字段这条 selectdb 路径能跟踪当前库
     char pending_db[MYSQL_DB_LENS + 1];
     char error_msg[256];     // 最近一个经 mysql_record 记下的 ERR 包错误信息，装不下截断
@@ -92,6 +92,8 @@ typedef struct mpack_ctx {
     uint64_t last_id;       // MPACK_OK 的自增 ID；其余类型为 0
     void *pack;             // QUERY / STMT_EXECUTE 为 mysql_reader_ctx，STMT_PREPARE 为 mysql_stmt_ctx，
                             // ERR 为错误串(NUL 结尾，没有文案时为 NULL)，OK 不带
+    char *database;         // 本应答把当前库换成了什么(COM_INIT_DB 的 OK 或 session track)，没换为 NULL；
+                            // 由 mysql_record 写进 client.database，随 mpack 释放
     void(*_free_mpack)(void *); // pack 字段的释放回调，NULL 表示直接 FREE
 }mpack_ctx;
 

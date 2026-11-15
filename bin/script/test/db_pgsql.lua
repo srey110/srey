@@ -383,6 +383,12 @@ runner.run(function(t)
     end)
     t:check(bok, "reason 为 boolean 时中止照常完成")
     t:check(pg:query("select 1"), "boolean reason 中止后连接仍可用")
+    -- reason 含 \0：pack_copy_fail 遇 \0 会抛，_safe_str 须先换掉，否则 CopyFail 发不出去
+    local zok = pg:copy_in("copy srey_test (id, name, score) from stdin", function()
+        return false, "bad\0row"
+    end)
+    t:check(zok, "reason 含 \\0 时中止照常完成")
+    t:check(pg:query("select 1"), "含 \\0 的 reason 中止后连接仍可用")
 
     -- 字符串小块库内攒批：按行返回的 5000 行一行不丢；lightuserdata 块不合并，但先后顺序不能乱
     t:check(pg:query("create temp table srey_copy_many (id serial, v text)"), "create temp srey_copy_many")
@@ -458,6 +464,15 @@ runner.run(function(t)
         t:eq(2, n, "建连回来重组过一次")
     end
     t:check(pg:ping(), "ping after cancel")
+    -- 空闲时连发 cancel：返回时服务端已处理完，紧跟的命令不被取消(不等服务端断开的话取消晚到，会打中下一条)。
+    -- 命令用 pg_sleep(0.01) 拉长执行期：修复撤掉时晚到的取消几乎必然落在它执行中
+    local zapped = 0
+    for _ = 1, 10 do
+        if not pg:cancel() or not pg:query("select pg_sleep(0.01)") then
+            zapped = zapped + 1
+        end
+    end
+    t:eq(0, zapped, "空闲时 cancel 后紧跟的命令不被取消")
 
     -- LISTEN / NOTIFY：通知不唤醒等回复的协程，syn_recv_any 能收到。同一条连接自发自收，通知排在 ReadyForQuery 之前
     t:check(pg:query("listen srey_chan"), "listen")

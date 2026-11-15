@@ -84,7 +84,7 @@ static void _task_handle_ssl_exchanged(task_ctx *task, message_ctx *msg) {
 // 处理应用层握手完成消息
 static void _task_handle_handshaked(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_net_handshaked) {
-        task->_net_handshaked(task, &msg->sk, msg->subtype, msg->client, msg->erro, msg->data, msg->size);
+        task->_net_handshaked(task, &msg->sk, msg->subtype, msg->client, msg->erro, msg->data, msg->size, msg->sess);
     }
 }
 // 处理 TCP 数据接收消息
@@ -120,7 +120,7 @@ static void _task_handle_close(task_ctx *task, message_ctx *msg) {
 static void _task_handle_recvfrom(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_net_recvfrom) {
         recvfrom_ctx *rf = msg->data;
-        task->_net_recvfrom(task, &msg->sk, msg->subtype, &rf->addr, rf->data, rf->len);
+        task->_net_recvfrom(task, &msg->sk, msg->subtype, &rf->addr, rf->data, rf->len, msg->sess);
     }
 }
 // 处理任务间请求消息：若未注册请求回调，则返回错误响应

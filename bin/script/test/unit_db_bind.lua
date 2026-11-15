@@ -108,7 +108,6 @@ runner.run(function(t)
         -- GC 析构走 __gc → _lmysql_bind_free
         b = nil
         collectgarbage()
-        t:check(true, "mysql.bind GC roundtrip ok")
     end
 
     -- ── mysql: erro 带出错误号 ─────────────────────────────────────────
@@ -228,7 +227,6 @@ runner.run(function(t)
         b5 = nil
         b3 = nil
         collectgarbage()
-        t:check(true, "pgsql.bind GC roundtrip ok")
     end
 
     -- ── bind 显式析构后再复用 ──────────────────────────────────────────
@@ -245,7 +243,6 @@ runner.run(function(t)
         b:string("k3", "after-free")
         b:null()
         b:clear()
-        t:check(true, "mysql.bind __gc 后复用不崩")
 
         local p = pbind.new(2)
         p:int32(1)
@@ -256,7 +253,6 @@ runner.run(function(t)
         t:eq(false, pcall(p.text, p, "after-free"), "pgsql.bind __gc 后 text 报错")
         t:eq(false, pcall(p.null, p), "pgsql.bind __gc 后 null 报错")
         p:clear()
-        t:check(true, "pgsql.bind __gc 后复用不崩")
 
         -- 组包侧同样按 nparam 早退，不会发出半截 Bind 消息
         local pack, size = pgsql.pack_stmt_execute("st_af", p)
@@ -490,7 +486,6 @@ runner.run(function(t)
         sess = nil
         mg = nil
         collectgarbage()
-        t:check(true, "mongo.session GC roundtrip ok")
     end
 
     -- ── 宿主被 m:__gc() 提前释放后，session 的每个入口都必须报可捕获的错 ──
@@ -636,7 +631,6 @@ runner.run(function(t)
 
         m = nil
         collectgarbage()
-        t:check(true, "mysql packer GC roundtrip ok")
     end
 
     -- ── pgsql packer 系列（不连接，仅 buffer 构造）────────────────────
@@ -715,7 +709,6 @@ runner.run(function(t)
 
         p = nil
         collectgarbage()
-        t:check(true, "pgsql packer GC roundtrip ok")
     end
 
     -- ── mongo packer 系列（不连接，仅 buffer 构造）────────────────────
@@ -973,7 +966,6 @@ runner.run(function(t)
 
         mg = nil
         collectgarbage()
-        t:check(true, "mongo packer GC roundtrip ok")
     end
 
     -- ── mongo opts 参数校验：组包侧 bson_cat 按文档自身的 4 字节头决定拷贝多少，

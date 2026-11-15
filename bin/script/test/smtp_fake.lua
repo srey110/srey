@@ -23,6 +23,7 @@ local interleave = 0 -- 检测到的交错次数
 local mails = 0 -- 服务端确认收下的邮件数
 local fail_rset = false -- 置 true 让下一条 RSET 被回 500(一次性)，压客户端的拆连接收尾
 local fail_rcpt = false -- 置 true 让下一条 RCPT 被回 550(一次性)，造一封失败的信
+local mute_mail = false -- 置 true 让下一条 MAIL FROM 不回(一次性)，造命令超时
 local rsets = 0 -- 服务端收到的 RSET 条数：投递成功不该发 RSET
 local ehlo_injected = false -- 客户端把问候里的裸 LF 原样拼进 EHLO 行就置 true
 local hostile = false -- 逐连接轮换：一次发正常应答，一次发合法但刁钻的形态，两边都得走通
@@ -74,6 +75,10 @@ local function _cmd(sk, fc, line)
             _reply(sk, "235 2.7.0 Authentication successful\r\n")
         end
     elseif up:find("^MAIL FROM:") then
+        if mute_mail then
+            mute_mail = false
+            return
+        end
         local tag = _tag(line, "c")
         if -1 == tag then-- 失败值与"无事务"哨兵同值，不拦的话下面两条交错检测都空转
             interleave = interleave + 1
@@ -275,6 +280,24 @@ runner.run(function(t)
     t:eq(false, ctx.established, "RSET 失败后 established 已清")
     t:check(rgen < ctx.generation, "RSET 失败让代次前进")
     t:check(ctx:ping(), "RSET 失败后 ping 能重连")
+
+    -- MAIL FROM 没等到应答（超时）：直接拆连接、不补发 reset（补发的会吃到迟到的旧应答），
+    -- 状态同步落账；ping 重连后照样能发。迟到应答撞上 reset 的竞态本身难稳定造，这里钉超时后的状态
+    local tgen = ctx.generation
+    local trsets = rsets
+    local tm = mail.new()
+    tm:from("srey", "c9@t")
+    tm:addrs_add("r9@t", MAIL_ADDR_TYPE.TO)
+    tm:subject("mute")
+    tm:msg("body")
+    tm:reply(0)
+    mute_mail = true
+    t:eq(false, srey.with_timeout({ netread = 500 }, ctx.send, ctx, tm), "MAIL FROM 超时时 send 返 false")
+    t:eq(trsets, rsets, "命令超时不补发 reset")
+    t:eq(false, ctx.established, "命令超时后 established 已清")
+    t:check(tgen < ctx.generation, "命令超时让代次前进")
+    t:check(ctx:ping(), "命令超时后 ping 能重连")
+    t:eq(true, ctx:send(tm), "重连后照常投递")
     ctx:quit()
 
     -- 建链失败时代次同样要前进：_connect 里的 try_connect 已经无条件覆写过 sk.fd，原来那条连接

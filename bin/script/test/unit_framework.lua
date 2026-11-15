@@ -387,6 +387,32 @@ runner.run(function(t)
         end
     end
 
+    -- ── srey.watch_closing：业务 closing 跑完(抛错也算)后，按注册顺序调库级观察者 ─────
+    do
+        local got = {}
+        srey.on_requested(function(reqtype, _, _, data, size)
+            if 201 == reqtype and data then
+                got[#got + 1] = srey.ud_str(data, size)
+            end
+        end)
+        local NAME = "closing_watch"
+        t:check(nil ~= task.register("test.closing_probe", NAME, 0, "framework", 2),
+                "closing 观察者探针注册成功")
+        srey.sleep(100)-- 等探针 startup 把观察者与 closing 挂上
+        local tk = task.grab(NAME)
+        if tk then
+            task.close(tk)
+            task.ungrab(tk)
+        end
+        _poll(function() return #got >= 3 and _task_gone(NAME) end)
+        t:eq("closing,w1,w2", table.concat(got, ","), "先业务 closing、再按注册顺序调观察者，closing 抛错不挡观察者")
+        local tk2 = task.grab(NAME)
+        t:eq(nil, tk2, "挂了观察者的 task 照常消失")
+        if tk2 then
+            task.ungrab(tk2)
+        end
+    end
+
     -- ── 注册前(chunk 顶层)调 task.close：注册时补发 CLOSING，startup 先跑、closing 后跑 ──
     -- 注册前就投 CLOSING 的话，worker 会与还在跑 chunk 的注册线程同时动同一个 lua_State
     do

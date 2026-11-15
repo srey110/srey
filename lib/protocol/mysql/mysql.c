@@ -71,6 +71,7 @@ void _mysql_pkfree(void *pack) {
         mpack->_free_mpack(mpack->pack);
     }
     FREE(mpack->pack);
+    FREE(mpack->database);
     FREE(mpack);
 }
 int32_t mysql_more(mpack_ctx *mpack) {
@@ -266,7 +267,7 @@ static void _mysql_auth_err(mysql_ctx *mysql, ud_cxt *ud, binary_ctx *breader, i
 // 认证成功：记下此刻的 autocommit（连接池归还时按它还原），通知上层握手完成，切换到命令阶段。
 // OK 包畸形按协议错误处理、不报握手成功，同命令阶段
 static void _mysql_auth_ok(mysql_ctx *mysql, ud_cxt *ud, binary_ctx *breader, int32_t *status) {
-    if (ERR_OK != _mpack_ok_parse(mysql, breader, NULL, NULL, NULL)) {
+    if (ERR_OK != _mpack_ok_parse(mysql, breader, NULL, NULL, NULL, NULL)) {
         BIT_SET(*status, PROT_ERROR);
         LOG_ERROR("mysql auth OK packet malformed.");
         return;
@@ -747,5 +748,9 @@ void mysql_record(mysql_ctx *mysql, mpack_ctx *mpack) {
         mysql->error_code = mpack->error_code;
         // 错误串只给人看，装不下就截断
         (void)copy_bounded(msg, strlen(msg), mysql->error_msg, sizeof(mysql->error_msg), 0);
+    }
+    if (NULL != mpack->database) {
+        // 解析时已按 client.database 的容量校验过，装得下
+        safe_fill_str(mysql->client.database, sizeof(mysql->client.database), mpack->database);
     }
 }

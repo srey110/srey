@@ -137,13 +137,14 @@ end
 function ctx:copy_in(sql, producer)
     return ppub.call(self, self._copy_in, sql, producer)
 end
--- producer 抛出或返回的值可能是带 __tostring 的对象，那个元方法自己也会抛；_copy_fail 里转字符串不能失手
+-- producer 抛出或返回的值可能是带 __tostring 的对象，那个元方法自己也会抛；_copy_fail 里转字符串不能失手。
+-- 内嵌的 \0 换成空格：pack_copy_fail 遇 \0 会抛
 local function _safe_str(v)
     if nil == v then
         return ""
     end
     local ok, s = pcall(tostring, v)
-    return ok and s or "copy aborted"
+    return ok and (s:gsub("\0", " ")) or "copy aborted"
 end
 -- 发 CopyFail 并等服务端确认。中止本身成功时返回 (true, 服务端文本)——CopyFail 的正常
 -- 应答就是 ErrorResponse，所以"中止成功"也走 ERR 包，且成功路径不写 err（写了会让
@@ -293,7 +294,9 @@ function ctx:_selectdb(database)
     return true
 end
 
----取消当前正在执行的查询：在独立连接上发送 CancelRequest，服务端处理后主动断开、无响应
+---取消当前正在执行的查询：在独立连接上发送 CancelRequest，服务端处理后主动断开、无响应。
+---发完挂起等服务端断开才返回(最多等读超时)：服务端异步处理取消，不等的话要取消的查询刚好已结束时，
+---取消会打中本连接上的下一条命令
 ---@return boolean ok 发送成功 true；未连接、握手还没拿到 BackendKeyData（pid 未就绪）、建连期间主连接已断开或重连过（不发，
 ---免得误取消新连接上的查询）返回 false
 function ctx:cancel()
@@ -320,9 +323,13 @@ function ctx:cancel()
         srey.close(csk)
         return false
     end
-    srey.send(csk, pack, #pack, 1)
+    local ok = srey.send(csk, pack, #pack, 1)
+    if ok then
+        -- 等服务端处理完主动断开再返回(同 C 侧 pgsql_cancel)：不等的话取消可能晚到、打中下一条命令
+        srey.syn_recv_any(csk)
+    end
     srey.close(csk)
-    return true
+    return ok
 end
 
 ---更新连接认证信息（下次重连时生效）。与 connect / 命令同在 self.serial 里排队：重连握手要读这两个字段；

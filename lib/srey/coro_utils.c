@@ -27,7 +27,7 @@
         _serial_unlock(_sheld); \
         return _srtn; \
     } while (0)
-// mysql / pgsql / mongo 锁内要等应答的收发一律经这两个，失败处置见 _serial_reply。
+// mysql / pgsql / mongo / smtp 锁内要等应答的收发一律经这两个，失败处置见 _serial_reply。
 // ctx 是带 task / established / generation 字段的连接上下文，sk 是它的连接标识
 #define SERIAL_SEND(ctx, sk, pack, size) \
     _serial_reply((ctx)->task, (sk), &(ctx)->established, &(ctx)->generation, \
@@ -53,16 +53,19 @@ static dns_ip *_dns_lookup_udp(task_ctx *task, const char *domain, int32_t ipv6,
     if (ERR_OK != netaddr_set(&srv, dns_get_ip(), 53)) {
         return NULL;
     }
+    // 先组包再建 socket：非法域名当场返回，不白建 socket
+    char buf[ONEK];
+    uint16_t id;
+    size_t lens = dns_request_pack(buf, domain, ipv6, &id);
+    if (0 == lens) {
+        return NULL;
+    }
     sock_ctx sk;
     if (ERR_OK != task_udp(task, PACK_NONE, AF_INET6 == netaddr_family(&srv) ? "::" : "0.0.0.0", 0, 0, &sk)) {
         return NULL;
     }
     coro_sync(task, &sk);
-    char buf[ONEK];
-    uint16_t id;
-    size_t lens = dns_request_pack(buf, domain, ipv6, &id);
-    if (0 == lens
-        || ERR_OK != ev_sendto_addr(&task->loader->netev, &sk, &srv, buf, lens, 1)) {
+    if (ERR_OK != ev_sendto_addr(&task->loader->netev, &sk, &srv, buf, lens, 1)) {
         ev_close(&task->loader->netev, &sk);
         return NULL;
     }
@@ -79,16 +82,15 @@ static dns_ip *_dns_lookup_udp(task_ctx *task, const char *domain, int32_t ipv6,
     return dns_parse_pack(rf->data, rf->len, cnt, id, nodata);
 }
 static dns_ip *_dns_lookup_tcp(task_ctx *task, const char *domain, int32_t ipv6, size_t *cnt) {
-    sock_ctx sk;
-    const char *dnsip = dns_get_ip();
-    if (ERR_OK != coro_connect(task, PACK_DNS, NULL, dnsip, 53, 0, NULL, &sk)) {
-        return NULL;
-    }
+    // 先组包再建连，理由同 _dns_lookup_udp
     char buf[ONEK];
     uint16_t id;
     size_t lens = dns_request_pack_tcp(buf, domain, ipv6, &id);
     if (0 == lens) {
-        ev_close(&task->loader->netev, &sk);
+        return NULL;
+    }
+    sock_ctx sk;
+    if (ERR_OK != coro_connect(task, PACK_DNS, NULL, dns_get_ip(), 53, 0, NULL, &sk)) {
         return NULL;
     }
     size_t rsize = 0;
@@ -695,13 +697,13 @@ int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp) {
                            _smtp_do_connect, smtp);
 }
 // 统一 SMTP 的"组包 → 同步发送 → 校验应答码"三步:cmd 为 NULL(组包拒绝,如地址含 CRLF)
-// 或没收到应答都返 ERR_FAILED。codes 传上面那几张表之一。
+// 或没收到应答都返 ERR_FAILED;没收到应答时连接已关掉(同 SERIAL_SEND)。codes 传上面那几张表之一。
 // cmd 是 lens 字节的堆串,copy=0 把所有权交给 ev_send,成败都不用调用方释放
 static int32_t _smtp_cmd2(smtp_ctx *smtp, char *cmd, size_t lens, const char *const *codes, size_t ncode) {
     if (NULL == cmd) {
         return ERR_FAILED;
     }
-    char *pack = coro_send(smtp->task, &smtp->sk, cmd, lens, NULL, 0);
+    char *pack = SERIAL_SEND(smtp, &smtp->sk, cmd, lens);
     if (NULL == pack) {
         return ERR_FAILED;
     }
@@ -772,9 +774,9 @@ int32_t smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
     } else {
         FREE(content);
     }
-    // RSET 失败说明连接已经不干净,下一封信的 DATA 会被回 503,而 NOOP 仍答 250 让
-    // smtp_ping 查不出来,只能就地关掉等重连。关法与没等到应答那批一样(等关闭确认):对端若已断,
-    // 协议的 closed 钩子(smtp.c 的 _smtp_udfree)已把这里的 sk 置失效,coro_close 才直接返回
+    // 没等到应答的命令已在 _smtp_cmd2 里关了连接,这里的 RSET 当场失败、吃不到迟到的旧应答。
+    // RSET 失败说明连接不干净(下一封 DATA 会被回 503,NOOP 却仍答 250、ping 查不出),只能关掉等重连;
+    // 对端已断时 closed 钩子(smtp.c 的 _smtp_udfree)已把 sk 置失效,coro_close 直接返回
     if (ERR_OK != rtn
         && ERR_OK != _smtp_cmd(smtp, smtp_pack_reset(), SMTP_CODE_OK, ARRAY_SIZE(SMTP_CODE_OK))) {
         (void)_serial_reply(smtp->task, &smtp->sk, &smtp->established, &smtp->generation, NULL);
@@ -831,6 +833,11 @@ int32_t pgsql_cancel(pgsql_ctx *pg) {
         return ERR_FAILED;
     }
     int32_t rtn = ev_send(&pg->task->loader->netev, &sk, buf, lens, 1);
+    if (ERR_OK == rtn) {
+        // 等服务端处理完主动断开再返回(它不回任何字节，读超时也会关连接)：服务端异步处理取消，
+        // 不等的话取消可能晚到、打中原连接上的下一条命令
+        (void)coro_recv_any(pg->task, &sk, NULL, NULL);
+    }
     ev_close(&pg->task->loader->netev, &sk);
     return rtn;
 }
@@ -1053,8 +1060,8 @@ static int32_t _mongo_auth(mongo_ctx *mongo, const char *authmod) {
     coro_handshaked(mongo->task, &mongo->sk, &err, NULL);
     return err;
 }
-// 两个漏斗共用的进锁：拿不到锁、或拿到锁时连接已不是组包时那条(mark 见 mongo_txn_mark)，都放掉包返回 ERR_FAILED。
-// 后者包里带着已作废事务的上下文，发到新连接上会被收进那个事务，按组包失败处理
+// 两个漏斗共用的进锁：拿不到锁、或拿到锁时组包时那个事务已失效(连接换过或已收尾，见 mongo_txn_moved)，都放掉包返回 ERR_FAILED。
+// 后者包里带着失效事务的上下文，按组包失败处理
 static int32_t _mongo_lock(mongo_ctx *mongo, coro_serial_ctx *held, void *pack, uint64_t mark) {
     if (ERR_OK != _serial_lock(mongo->task, held)) {
         FREE(pack);
@@ -1063,7 +1070,7 @@ static int32_t _mongo_lock(mongo_ctx *mongo, coro_serial_ctx *held, void *pack, 
     if (mongo_txn_moved(mongo, mark)) {
         _serial_unlock(held);
         FREE(pack);
-        LOG_WARN("mongo transaction invalidated by reconnect, rollback or begin again.");
+        LOG_WARN("mongo transaction ended or invalidated by reconnect while queued, command not sent.");
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -1319,24 +1326,28 @@ int32_t mongo_refreshsession(mongo_session *session) {
 }
 void mongo_freesession(mongo_session *session) {
     mongo_ctx *mongo = session->mongo;
-    // 解绑必须排在会挂起的 _mongo_send 之前:挂起窗口里 mongo->session 还指着本 session,
-    // 并发协程的 commit/rollback 就能过 _mongo_txn_end 的绑定判定,醒来后写进已释放的 session
+    coro_serial_ctx *held = mongo->serial;
+    // 解绑放在拿到锁之后：排在前面的 commit/rollback 照常收尾；放锁时就地接着跑的后来者看到已解绑，
+    // 挂起前就失败退出，碰不到下面释放的 session。拿不到锁(不在协程内 / 连接正在销毁)也照样解绑、释放
+    int32_t locked = ERR_OK == _serial_lock(mongo->task, held);
     if (mongo->session == session) {
         mongo->session = NULL;
     }
-    // 不看绑定:endsession 只按 session->uuid 组包,不带连接当前绑定的事务上下文。
-    // 也不看连接换没换过:服务端的会话记录不随连接消失,漏发这一包就要挂到会话超时才回收
-    // 包恒带 MORETOCOME（见 mongo_pack_endsession），_mongo_send 发完即返回：endSessions 的结果本来就不看
-    size_t lens;
-    void *endsession = mongo_pack_endsession(session, &lens);
-    // 释放必须排在 _mongo_send 之后:它取的 serial 锁把本函数排在在途 commit/rollback 之后,
-    // 那边醒来还要读 session->options。提前释放就是让它读已释放内存
-    _mongo_send(mongo, endsession, lens, MONGO_TXN_NONE, NULL);
+    if (locked) {
+        // 不看绑定:endsession 只按 session->uuid 组包,不带连接当前绑定的事务上下文。
+        // 也不看连接换没换过:服务端的会话记录不随连接消失,漏发这一包就要挂到会话超时才回收
+        // 包恒带 MORETOCOME（见 mongo_pack_endsession），_mongo_send 发完即返回：endSessions 的结果本来就不看
+        size_t lens;
+        void *endsession = mongo_pack_endsession(session, &lens);
+        _mongo_send(mongo, endsession, lens, MONGO_TXN_NONE, NULL);
+        _serial_unlock(held);
+    }
     FREE(session->options);
     FREE(session);
 }
 // 组包一律从 mongo->session 取事务上下文:begin 靠拒绝第二个 session 维持绑定,commit/rollback 的判定在 _mongo_txn_bound。
 // begin 记下当时的 skid,重连换了即本次事务作废(mongo_session_stale),绑定留到收尾才解;早退不释放 options,由重新 begin 与 freesession 释放。
+// 每次 begin 另取一个 bindid,排队中的包据此认出事务已收尾或重开(见 mongo_txn_moved)。
 // begin 不挂起不套锁,插进在途的收尾时由 _mongo_txn_end 按 txnNumber 认领
 int32_t mongo_begin(mongo_session *session) {
     mongo_ctx *mongo = session->mongo;
@@ -1353,6 +1364,7 @@ int32_t mongo_begin(mongo_session *session) {
     FREE(session->options);//防止重复调用漏释放
     session->options = mongo_transaction_options(session, &session->optionslens);
     session->skid = mongo->sk.skid;
+    session->bindid = createid();
     mongo->session = session;
     return ERR_OK;
 }
@@ -1369,7 +1381,7 @@ static int32_t _mongo_txn_end(mongo_session *session, char *options, size_t optl
         FREE(session->options);
         return ERR_OK;
     }
-    int32_t txn = session->txnnumber;
+    int64_t txn = session->txnnumber;
     size_t lens;
     void *txnpack = pack(session, options, optlens, &lens);
     mgopack_ctx *mgpack = _mongo_sendwait(mongo, txnpack, lens, MONGO_TXN_NONE);// 组包已在锁内
@@ -1569,11 +1581,14 @@ static int32_t _mongo_pool_ping(void *conn) {
     return mongo_ping((mongo_ctx *)conn);
 }
 static void _mongo_pool_quit(void *conn) {
-    mongo_quit((mongo_ctx *)conn);
+    mongo_ctx *mongo = (mongo_ctx *)conn;
+    (void)mongo_clear_flag(mongo);// 断了、到寿命的连接归还时池不调 reset 而走这里，flags 同样不留给下一个借用者
+    mongo_quit(mongo);
 }
-// 归还时连接上还绑着事务(借用者没 commit / rollback)：回滚掉，不让下一个人的写命令组进这个事务
+// 归还时先清连接级 flags；连接上还绑着事务(借用者没 commit / rollback)就回滚掉，不让下一个人的写命令组进这个事务
 static int32_t _mongo_pool_reset(void *conn) {
     mongo_ctx *mongo = (mongo_ctx *)conn;
+    (void)mongo_clear_flag(mongo);// 连接级 flags 不留给下一个借用者：MORETOCOME 会让他的写静默变成只发不等
     mongo_session *bound = mongo->session;
     if (NULL == bound) {
         return ERR_OK;

@@ -1,5 +1,6 @@
 ﻿#include "protocol/kcp/kcp.h"
 #include "containers/hashmap.h"
+#include "utils/netutils.h"
 #if KCP_TICK_HEAP
 #include "containers/heap.h"
 #endif
@@ -440,6 +441,14 @@ static kcp_element *_kcp_element_init(kcp_ctx *kcp, name_t handle, uint64_t sess
     if (0 == port) {
         kel->learn = _kcp_addr_any(&kel->addr) ? KCP_LEARN_ALL : KCP_LEARN_PORT;
     }
+    // 对端须与承载的 socket 同族(地址整个从首包学的除外)，否则发包全失败、收包全按来源不符丢，到死链才拆。
+    // 在调用方线程判才能把失败当场回传，同 ev_udp_join
+    if (KCP_LEARN_ALL != kel->learn
+        && netaddr_family(&kel->addr) != sock_family(kcp->sk.fd)) {
+        LOG_ERROR("kcp conv %u peer %s family mismatch with fd %d.", kcp->conv, ip, (int32_t)kcp->sk.fd);
+        _kcp_element_free(kel);
+        return NULL;
+    }
     kel->conv = kcp->conv;
     kel->sess = sess;
     kel->handle = handle;
@@ -522,7 +531,12 @@ static kcp_element *_kcp_resolve(struct evsock_ctx *evsk, ud_cxt *ud, uint32_t c
     kcp_element *kel = NULL == ud->context ? NULL : _kcp_map_get((kcp_ud_ctx *)ud->context, conv);
     if (NULL == kel || kel->sess != sess) {
         if (0 == quiet) {
-            LOG_WARN("can't find conv %u.", conv);
+            // 积压超限、死链拆掉会话后业务句柄还当它活着，接着高速发送时这里每条都到：有 context 就走节流
+            if (NULL != ud->context) {
+                _kcp_drop_warn((kcp_ud_ctx *)ud->context, conv, "session not found");
+            } else {
+                LOG_WARN("can't find conv %u.", conv);
+            }
         }
         return NULL;
     }

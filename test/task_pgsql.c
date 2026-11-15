@@ -631,8 +631,14 @@ static void _cancel_long_query(void *owner, void *arg) {
 static void _cancel_fire(void *owner, void *arg) {
     (void)owner;
     _conc_arg *a = (_conc_arg *)arg;
-    coro_sleep(a->pg->task, 300);
-    a->got = pgsql_cancel(a->pg);
+    // 后端还没开跑时 PG 会忽略取消：查询没结束就隔 1 秒补发，最多 3 次
+    for (int32_t i = 0; i < 3; i++) {
+        coro_sleep(a->pg->task, 0 == i ? 300 : 1000);
+        if (0 != a->done) {
+            break;
+        }
+        a->got = pgsql_cancel(a->pg);
+    }
 }
 // pgsql_cancel 不排队等锁：长查询很快被打断、收到服务端的取消错误，连接照常可用
 static int32_t _cancel_query(pgsql_ctx *pg) {
@@ -671,6 +677,24 @@ static int32_t _cancel_swapped(pgsql_ctx *pg) {
         || ERR_OK != pgsql_ping(pg)) {
         LOG_ERROR("pgsql cancel: backend swapped while connecting, expected skip, got %d.", rtn);
         return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+// 空闲时连发 cancel：返回时服务端已处理完，紧跟的命令不被取消(不等服务端断开的话取消晚到，会打中下一条)。
+// 命令用 pg_sleep(0.01) 拉长执行期：修复撤掉时晚到的取消几乎必然落在它执行中
+static int32_t _cancel_idle(pgsql_ctx *pg) {
+    pgpack_ctx *p;
+    for (int32_t i = 0; i < 10; i++) {
+        if (ERR_OK != pgsql_cancel(pg)) {
+            LOG_ERROR("pgsql cancel idle: send failed at %d.", i);
+            return ERR_FAILED;
+        }
+        p = pgsql_query(pg, "select pg_sleep(0.01)");
+        if (NULL == p
+            || PGPACK_OK != p->type) {
+            LOG_ERROR("pgsql cancel idle: command after cancel failed at %d.", i);
+            return ERR_FAILED;
+        }
     }
     return ERR_OK;
 }
@@ -1002,6 +1026,7 @@ static void _startup_run(task_ctx *task) {
     if (task_isclosing(task)
         || ERR_OK != _cancel_query(&arg->pg)
         || ERR_OK != _cancel_swapped(&arg->pg)
+        || ERR_OK != _cancel_idle(&arg->pg)
         || ERR_OK != _listen_notify(task, &arg->pg)
         || ERR_OK != _live_selectdb(&arg->pg, arg->database)
         || ERR_OK != _proto32(&arg->pg)) {

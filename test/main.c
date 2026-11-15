@@ -132,7 +132,7 @@ static void _cusuite_fails(CuSuite *suite) {
     }
 }
 
-// 依赖本机 docker 的用例（外部 EMQX 与四个数据库），没启动允许失败
+// 依赖本机 docker 的用例（外部 EMQX 与四个数据库），没启动允许失败；mqtt 客户端的 optional 实参也取自这里
 static int32_t _test_optional(const char *name) {
     return 0 == strcmp(name, "mqtt_test1")
         || 0 == strcmp(name, "mqtt_test2")
@@ -417,7 +417,7 @@ int main(int argc, char *argv[]) {
     evssl_register("hbclient", evssl_hbcli);
     // ssl_keyupdate 专用:KeyUpdate 是 TLS1.3 独有的，钉死下限，
     // 否则协商到 1.2 时 evssl_keyupdate 直接失败，用例退化成普通大流量测试还报绿。
-    // 钉不上就不起这个用例(evssl_ku 为 NULL 时 start 直接返回)，留在 pending 里报出来
+    // 钉不上就不起这个用例(evssl_ku 为 NULL 时 start 写失败返回)
     evssl_ku = evssl_new(ca, svcrt, svkey, SSL_FILETYPE_PEM);
     if (NULL != evssl_ku
         && ERR_OK != evssl_min_proto(evssl_ku, TLS1_3_VERSION)) {
@@ -443,15 +443,15 @@ int main(int argc, char *argv[]) {
     task_mqtt_server_start(g_loader, "task_mqtt_server", 1883, 0);
     // mqtt_test1/2：连接 docker EMQX（端口 1884）
     task_mqtt_client_start(g_loader, "mqtt_test1", MQTT_311, TEST_EXT_IP, 1884,
-        0, 0, 1, _get_name_val(testlist, "mqtt_test1"));
+        0, 0, _test_optional("mqtt_test1"), _get_name_val(testlist, "mqtt_test1"));
     task_mqtt_client_start(g_loader, "mqtt_test2", MQTT_50, TEST_EXT_IP, 1884,
-        0, 0, 1, _get_name_val(testlist, "mqtt_test2"));
+        0, 0, _test_optional("mqtt_test2"), _get_name_val(testlist, "mqtt_test2"));
     // mqtt_test3/4 连的是上面这个进程内 broker，故各自在协程里先等一会再连（见头文件说明）；
     // 1884 的 test1/test2 连的是外部 EMQX，不受本进程 task 启动顺序影响，故不等
     task_mqtt_client_start(g_loader, "mqtt_test3", MQTT_311, "127.0.0.1", 1883,
-        500, 0, 0, _get_name_val(testlist, "mqtt_test3"));
+        500, 0, _test_optional("mqtt_test3"), _get_name_val(testlist, "mqtt_test3"));
     task_mqtt_client_start(g_loader, "mqtt_test4", MQTT_50, "127.0.0.1", 1883,
-        500, 0, 0, _get_name_val(testlist, "mqtt_test4"));
+        500, 0, _test_optional("mqtt_test4"), _get_name_val(testlist, "mqtt_test4"));
     //habor
     int32_t rtn = harbor_start(g_loader, "harbor", ssl_harbor, "127.0.0.1", (uint16_t)*(_get_name_val(portlist, "harbor")));
     if (ERR_OK != rtn) {
@@ -697,7 +697,7 @@ int main(int argc, char *argv[]) {
     if (nclose < 2) {
         unit_failed++;
     }
-    // 每次关闭都要分发 CLOSING，分发完必有一轮结束，所以回调次数不会少于关闭次数
+    // 每次关闭都要分发 CLOSING，分发完必有一轮结束；只数关闭期的轮次，所以回调次数不会少于关闭次数
     uint32_t nround = get_round_end_count();
     PRINT("round end count: %u", nround);
     if (nround < nclose) {
