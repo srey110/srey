@@ -42,6 +42,10 @@ int32_t ev_ud_##field(ev_ctx *ctx, sock_ctx *sk, type field) { \
 }
 
 int32_t _evpub_checkid(struct evsock_ctx *evsk, const uint64_t skid) {
+    // 业务 skid 最小为 1；0 是零初始化的 sock_ctx，会撞上 skid 恒 0 的监听 / 命令管道
+    if (0 == skid) {
+        return ERR_FAILED;
+    }
 #ifdef EV_IOCP
     return _iocp_check_skid(evsk, skid);
 #else
@@ -745,6 +749,18 @@ static int32_t _ev_udp_group(ev_ctx *ctx, sock_ctx *sk, udp_opt_type op,
         || (0 != grpv6 ? 0xff != gaddr[0] : 0xe0 != (gaddr[0] & 0xf0))) {
         LOG_ERROR("udp group %s is not a multicast address.", group_ip);
         return ERR_FAILED;
+    }
+    // 网卡也是调用方契约：认不出来时事件线程只能退回默认网卡。Windows 的 IPv6 不认接口名
+    if (!EMPTYSTR(iface_str)) {
+#ifdef EV_IOCP
+        int32_t ifok = 0 != grpv6 || 1 == inet_pton(AF_INET, iface_str, gaddr);
+#else
+        int32_t ifok = 0 != grpv6 ? 0 != if_nametoindex(iface_str) : 1 == inet_pton(AF_INET, iface_str, gaddr);
+#endif
+        if (!ifok) {
+            LOG_ERROR("udp iface %s not found.", iface_str);
+            return ERR_FAILED;
+        }
     }
     udp_opt_arg *arg;
     CALLOC(arg, 1, sizeof(udp_opt_arg));

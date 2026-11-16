@@ -9,6 +9,9 @@
 #if defined(EV_EPOLL)
 #include <sys/syscall.h>
 #endif
+#if defined(EV_KQUEUE)
+#include <dlfcn.h>
+#endif
 
 // 延迟关闭用例：服务端收到第一段就回这条响应并 ev_close
 #define LINGER_RESP "HTTP/1.1 411 Length Required\r\nContent-Length: 0\r\n\r\n"
@@ -46,6 +49,10 @@
 #define SSL_CONN_CLOSE_PORT 15084
 // 多播 TTL / LOOP 回读用例的 UDP 端口
 #define UDP_MCAST_OPT_PORT 15083
+#define UDP_MCAST_OPT6_PORT 15140
+#define CONN_REARM_PORT 15141
+#define SLOW_CLOSE_PORT 15142
+#define KQ_LOST_PORT 15143
 // 指定 watcher 的用例：TCP 监听端口与 UDP 端口
 #define LAUNCH_IDX_PORT 15022
 #define LAUNCH_UDP_PORT 15023
@@ -499,6 +506,18 @@ static void test_evssl_read_close_notify(CuTest *tc) {
     CuAssertIntEquals(tc, (int32_t)sizeof(buf), sent);
     CuAssertIntEquals(tc, ERR_FAILED, rtn);
 }
+// evssl_min_proto：表内的值与 0 收下；SSL3、DTLS 号 OpenSSL 照收(DTLS 号还会被忽略)，这里拒收
+static void test_evssl_min_proto(CuTest *tc) {
+    evssl_ctx *cc = evssl_new(NULL, NULL, NULL, SSL_FILETYPE_PEM);
+    if (NULL == cc) {
+        CuFail(tc, "evssl_new failed");
+    }
+    CuAssertIntEquals(tc, ERR_OK, evssl_min_proto(cc, TLS1_2_VERSION));
+    CuAssertIntEquals(tc, ERR_OK, evssl_min_proto(cc, 0));
+    CuAssertIntEquals(tc, ERR_FAILED, evssl_min_proto(cc, SSL3_VERSION));
+    CuAssertIntEquals(tc, ERR_FAILED, evssl_min_proto(cc, DTLS1_2_VERSION));
+    evssl_free(cc);
+}
 // evssl_host：域名与 IP 收下、NULL 清除；不合规的主机名 OpenSSL 4 起当场拒收，之前的版本照收(到握手比对时才失败)。
 // 超过 255 字节被拒且原设置不变：设好域名后再给 256 字节，之后建出的 SSL 上 SNI 仍是原域名
 static void test_evssl_host(CuTest *tc) {
@@ -700,11 +719,18 @@ static void test_ev_accept_opts(CuTest *tc) {
     CuAssertIntEquals(tc, KEEPALIVE_TIME, (int32_t)ATOMIC_GET(&_g_acp_idle));
 #endif
 }
-// accept 每轮上限用例：已接受的连接数
+// accept 每轮上限用例：已接受的连接数，第一轮派发完时已接的条数(-1 为还没量)
 static atomic_t _g_acp_round_n;
+static atomic_t _g_acp_round_first;
+// ev_defer_exec 的回调排在本轮派发之后跑，这时数到的就是第一轮接了几条
+static void _acp_round_probe(void *arg) {
+    (void)arg;
+    ATOMIC_SET(&_g_acp_round_first, ATOMIC_GET(&_g_acp_round_n));
+}
 static int32_t _acp_round_on_accept(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud) {
-    (void)ev; (void)sk; (void)ud;
+    (void)sk; (void)ud;
     if (0 == ATOMIC_ADD(&_g_acp_round_n, 1)) {
+        ev_defer_exec(ev, 0, _acp_round_probe, NULL, NULL);
         MSLEEP(300);// 挡住事件线程，让后面的连接在 backlog 里一次排上好几轮的量
     }
     return ERR_OK;
@@ -722,6 +748,7 @@ static void test_ev_accept_round_cap(CuTest *tc) {
     cbs.acp_cb = _acp_round_on_accept;
     cbs.r_cb = _acp_opts_on_recv;
     ATOMIC_SET(&_g_acp_round_n, 0);
+    ATOMIC_SET(&_g_acp_round_first, -1);
     ev_init(&ev, 1, NULL);
     int32_t lrtn = ev_listen(&ev, NULL, "127.0.0.1", ACP_ROUND_PORT, &cbs, NULL, NULL, 0, &id);
     int32_t i;
@@ -742,6 +769,11 @@ static void test_ev_accept_round_cap(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, lrtn);
     CuAssertIntEquals(tc, NCONN, nconn);
     CuAssertIntEquals(tc, NCONN, (int32_t)ATOMIC_GET(&_g_acp_round_n));
+#if defined(TRIGGER_LT) && !defined(EV_IOCP)
+    // 钉住上限本身：第一轮最多接 ACCEPT_ROUND_MAX 条(kqueue 按待接数可能更少)
+    int32_t first = (int32_t)ATOMIC_GET(&_g_acp_round_first);
+    CuAssertTrue(tc, first >= 1 && first <= ACCEPT_ROUND_MAX);
+#endif
 }
 // UDP 用例：已投递的 datagram 数与关闭回调次数
 static atomic_t _g_udp_nrecv;
@@ -825,11 +857,65 @@ static int32_t _mcast_opt_read(struct watcher_ctx *watcher, struct evsock_ctx *e
     return 1;
 }
 // 多播 TTL / LOOP 真设上了：两侧 optval 宽度不同，写错了 ev_udp_ttl / ev_udp_loop 照样返回 ERR_OK，只落一条 ERROR
+// 同 _mcast_opt_read，回读 IPv6 的 HOPS / LOOP(cmds.c 两项都按 int 设)
+static int32_t _mcast_opt6_read(struct watcher_ctx *watcher, struct evsock_ctx *evsk, void *data, uint64_t number) {
+    (void)watcher;
+    (void)evsk;
+    (void)data;
+    SOCKET fd = (SOCKET)number;
+    int32_t hops = 0, loop = -1;
+    socklen_t lens = (socklen_t)sizeof(hops);
+    int32_t rtn = getsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, (char *)&hops, &lens);
+    lens = (socklen_t)sizeof(loop);
+    if (0 == rtn) {
+        rtn = getsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, (char *)&loop, &lens);
+    }
+    _g_mcast_ttl = hops;
+    _g_mcast_loop = loop;
+    ATOMIC_SET(&_g_mcast_done, 0 == rtn ? 1 : 2);
+    return 1;
+}
+// IPv6 那几支：在 ::1 上设 HOPS / LOOP 后回读；Unix 上不存在的接口名同步失败(Windows 不认接口名，不测)
+static void test_ev_udp_mcast_opt6(CuTest *tc) {
+    ev_ctx ev;
+    cbs_ctx cbs;
+    sock_ctx sk;
+    int32_t rtn[3] = { ERR_FAILED, ERR_FAILED, ERR_FAILED };
+    int32_t rtn_if = ERR_FAILED;
+    ZERO(&cbs, sizeof(cbs));
+    cbs.rf_cb = _mcast_on_recvfrom;
+    ATOMIC_SET(&_g_mcast_done, 0);
+    _g_mcast_ttl = -1;
+    _g_mcast_loop = -1;
+    ev_init(&ev, 1, NULL);
+    int32_t urtn = ev_udp(&ev, "::1", UDP_MCAST_OPT6_PORT, &cbs, NULL, INVALID_INDEX, &sk);
+    if (ERR_OK == urtn) {
+        rtn[0] = ev_udp_ttl(&ev, &sk, 5);
+        rtn[1] = ev_udp_loop(&ev, &sk, 0);
+#ifndef OS_WIN
+        rtn_if = ev_udp_join(&ev, &sk, "ff02::1", "nosuchif0");
+#endif
+        rtn[2] = ev_props(&ev, &sk, _mcast_opt6_read, NULL, NULL, (uint64_t)sk.fd);
+        for (int32_t i = 0; i < 500 && 0 == (int32_t)ATOMIC_GET(&_g_mcast_done); i++) {
+            MSLEEP(1);
+        }
+    }
+    ev_free(&ev);
+    CuAssertIntEquals(tc, ERR_OK, urtn);
+    CuAssertIntEquals(tc, ERR_FAILED, rtn_if);
+    CuAssertIntEquals(tc, ERR_OK, rtn[0]);
+    CuAssertIntEquals(tc, ERR_OK, rtn[1]);
+    CuAssertIntEquals(tc, ERR_OK, rtn[2]);
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_mcast_done));
+    CuAssertIntEquals(tc, 5, _g_mcast_ttl);
+    CuAssertIntEquals(tc, 0, _g_mcast_loop);
+}
 static void test_ev_udp_mcast_opt(CuTest *tc) {
     ev_ctx ev;
     cbs_ctx cbs;
     sock_ctx sk;
     int32_t rtn[3] = { ERR_FAILED, ERR_FAILED, ERR_FAILED };
+    int32_t rtn_if = ERR_OK;
     ZERO(&cbs, sizeof(cbs));
     cbs.rf_cb = _mcast_on_recvfrom;
     ATOMIC_SET(&_g_mcast_done, 0);
@@ -840,6 +926,7 @@ static void test_ev_udp_mcast_opt(CuTest *tc) {
     if (ERR_OK == urtn) {
         rtn[0] = ev_udp_ttl(&ev, &sk, 7);
         rtn[1] = ev_udp_loop(&ev, &sk, 0);
+        rtn_if = ev_udp_join(&ev, &sk, "239.1.2.3", "not-an-ip");// 网卡认不出就同步失败，不退回默认网卡
         rtn[2] = ev_props(&ev, &sk, _mcast_opt_read, NULL, NULL, (uint64_t)sk.fd);
         for (int32_t i = 0; i < 500 && 0 == (int32_t)ATOMIC_GET(&_g_mcast_done); i++) {
             MSLEEP(1);
@@ -847,6 +934,7 @@ static void test_ev_udp_mcast_opt(CuTest *tc) {
     }
     ev_free(&ev);
     CuAssertIntEquals(tc, ERR_OK, urtn);
+    CuAssertIntEquals(tc, ERR_FAILED, rtn_if);
     CuAssertIntEquals(tc, ERR_OK, rtn[0]);
     CuAssertIntEquals(tc, ERR_OK, rtn[1]);
     CuAssertIntEquals(tc, ERR_OK, rtn[2]);
@@ -1151,6 +1239,59 @@ static void test_ev_close_in_conn_fail(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, crtn);
     CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_cfail_conn));
     CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_cfail_injected));
+    CuAssertIntEquals(tc, 0, (int32_t)ATOMIC_GET(&_g_cfail_closed));
+}
+static int32_t _crearm_on_conn(ev_ctx *ev, sock_ctx *sk, int32_t erro, ud_cxt *ud) {
+    (void)ev; (void)sk; (void)ud;
+    if (ERR_OK != erro) {
+        ATOMIC_ADD(&_g_cfail_conn, 1);
+    }
+    return ERR_OK;
+}
+// 连接还没连上就被 ev_close、补注册读事件又失败：走连接失败收尾，conn_cb 报失败一次，没有关闭回调
+static void test_ev_close_connecting_rearm_fail(CuTest *tc) {
+    ev_ctx ev;
+    cbs_ctx cbs;
+    sock_ctx sk;
+    netaddr_ctx addr;
+    SOCKET lfd = INVALID_SOCK;
+    SOCKET c1 = INVALID_SOCK;
+    int32_t i, crtn = ERR_FAILED;
+    ZERO(&cbs, sizeof(cbs));
+    cbs.conn_cb = _crearm_on_conn;
+    cbs.r_cb = _incb_drain;
+    cbs.c_cb = _cfail_on_close;
+    ATOMIC_SET(&_g_cfail_armfd, 0);
+    ATOMIC_SET(&_g_cfail_injected, 0);
+    ATOMIC_SET(&_g_cfail_conn, 0);
+    ATOMIC_SET(&_g_cfail_closed, 0);
+    ev_init(&ev, 1, NULL);
+    // 不 accept、backlog 为 0 的监听：先连上一条占满队列，之后的 SYN 被丢，连接一直停在连接中
+    if (ERR_OK == netaddr_set(&addr, "127.0.0.1", CONN_REARM_PORT)) {
+        lfd = sock_create_cloexec(netaddr_family(&addr), SOCK_STREAM, 0, 0);
+    }
+    if (INVALID_SOCK != lfd
+        && 0 == bind(lfd, netaddr_addr(&addr), netaddr_size(&addr))
+        && 0 == listen(lfd, 0)) {
+        c1 = _connect_local(CONN_REARM_PORT, 0);
+        crtn = ev_connect(&ev, NULL, "127.0.0.1", CONN_REARM_PORT, &cbs, NULL, 0, INVALID_INDEX, &sk);
+    }
+    if (ERR_OK == crtn) {
+        MSLEEP(50);// 等连接在事件线程上登记好
+        ATOMIC_SET(&_g_cfail_armfd, (atomic_t)(sk.fd + 1));
+        ev_close(&ev, &sk);
+        for (i = 0; i < 1000 && 0 == (int32_t)ATOMIC_GET(&_g_cfail_conn); i++) {
+            MSLEEP(1);
+        }
+        ATOMIC_SET(&_g_cfail_armfd, 0);
+        MSLEEP(50);// 误调关闭回调的话会紧跟着来
+    }
+    ev_free(&ev);
+    CLOSE_SOCK(c1);
+    CLOSE_SOCK(lfd);
+    CuAssertIntEquals(tc, ERR_OK, crtn);
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_cfail_injected));
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_cfail_conn));
     CuAssertIntEquals(tc, 0, (int32_t)ATOMIC_GET(&_g_cfail_closed));
 }
 static int32_t _cdel_on_conn(ev_ctx *ev, sock_ctx *sk, int32_t erro, ud_cxt *ud) {
@@ -2968,6 +3109,164 @@ static void _slow_wait_sent(void) {
 }
 // 对端只连不读：服务端写不动后，1 秒里进程 CPU 要远低于一核。IOCP 曾拿立即完成的 0 字节 WSASend 等可写，
 // 这期间 watcher 空转吃满一核。随后客户端读完，服务端报的已发字节要等于总量(可写后接着发，唤醒不丢)
+// 对端只连不读、服务端写不动时本端关闭：等可写的轮询要被取消，关闭回调限时内到，停机也不等收干超时
+static sock_ctx _g_slowc_sk;
+static atomic_t _g_slowc_acp;
+static atomic_t _g_slowc_closed;
+static int32_t _slowc_on_acp(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud) {
+    (void)ud;
+    _g_slowc_sk = *sk;
+    ATOMIC_SET(&_g_slowc_acp, 1);
+    _slow_push(ev, sk);
+    return ERR_OK;
+}
+static void _slowc_on_close(ev_ctx *ev, sock_ctx *sk, int32_t client, int32_t erro, ud_cxt *ud) {
+    (void)ev; (void)sk; (void)client; (void)erro; (void)ud;
+    ATOMIC_ADD(&_g_slowc_closed, 1);
+}
+static void test_ev_slow_reader_close(CuTest *tc) {
+    ev_ctx ev;
+    cbs_ctx cbs;
+    netaddr_ctx addr;
+    SOCKET fd = INVALID_SOCK;
+    uint64_t id, tclose = 0;
+    int32_t rtn, stalled = 0, rcvbuf = 16 * 1024;
+    ZERO(&cbs, sizeof(cbs));
+    cbs.acp_cb = _slowc_on_acp;
+    cbs.s_cb = _slow_on_sent;
+    cbs.r_cb = _slow_on_recv;
+    cbs.c_cb = _slowc_on_close;
+    ATOMIC_SET(&_g_slow_sent, 0);
+    ATOMIC_SET(&_g_slowc_acp, 0);
+    ATOMIC_SET(&_g_slowc_closed, 0);
+    ev_init(&ev, 1, NULL);
+    rtn = ev_listen(&ev, NULL, "127.0.0.1", SLOW_CLOSE_PORT, &cbs, NULL, NULL, 0, &id);
+    if (ERR_OK == rtn
+        && ERR_OK == netaddr_set(&addr, "127.0.0.1", SLOW_CLOSE_PORT)) {
+        fd = sock_create_cloexec(netaddr_family(&addr), SOCK_STREAM, 0, 0);
+    }
+    if (INVALID_SOCK != fd) {
+        (void)setsockopt(fd, SOL_SOCKET, SO_RCVBUF, (char *)&rcvbuf, (socklen_t)sizeof(rcvbuf));
+        if (0 == connect(fd, netaddr_addr(&addr), netaddr_size(&addr))) {
+            (void)_slow_measure(&stalled);
+            if (0 != ATOMIC_GET(&_g_slowc_acp)) {
+                uint64_t t0 = nowms();
+                ev_close(&ev, &_g_slowc_sk);
+                while (0 == ATOMIC_GET(&_g_slowc_closed)
+                       && nowms() - t0 < 5000) {
+                    MSLEEP(1);
+                }
+                tclose = nowms() - t0;
+            }
+        }
+    }
+    uint64_t t1 = nowms();
+    ev_free(&ev);// 客户端仍不读，连接还卡着
+    uint64_t tfree = nowms() - t1;
+    CLOSE_SOCK(fd);
+    CuAssertIntEquals(tc, ERR_OK, rtn);
+    CuAssertIntEquals(tc, 1, stalled);
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_slowc_closed));
+    CuAssertTrue(tc, tclose < 2000);
+    CuAssertTrue(tc, tfree < 2500);
+}
+#if defined(EV_KQUEUE) && defined(RTLD_NEXT)
+// 替换整个 test 程序的 kevent(要靠 RTLD_NEXT 取原函数，没有这个宏的平台不编)：平时原样转发；capture 置 1 后记下下一条登记读事件的 ident 与 udata，
+// inject 置 1 后在下一次返回里补一条它的 EV_ERROR 回执，模拟监听丢了 knote
+static atomic_t _g_kq_capture;
+static atomic_t _g_kq_inject;
+static atomic_t _g_kq_injected;
+static atomic_t _g_kq_nacc;
+static uintptr_t _g_kq_ident;
+static void *_g_kq_udata;
+int kevent(int kq, const struct kevent *changelist, int nchanges, struct kevent *eventlist, int nevents,
+           const struct timespec *timeout) {
+    static int (*real)(int, const struct kevent *, int, struct kevent *, int, const struct timespec *);
+    if (NULL == real) {
+        real = (int (*)(int, const struct kevent *, int, struct kevent *, int, const struct timespec *))dlsym(RTLD_NEXT, "kevent");
+    }
+    if (0 != ATOMIC_GET(&_g_kq_capture)) {
+        for (int i = 0; i < nchanges; i++) {
+            if (EVFILT_READ == changelist[i].filter
+                && 0 != (changelist[i].flags & EV_ADD)) {
+                _g_kq_ident = changelist[i].ident;
+                _g_kq_udata = changelist[i].udata;
+                ATOMIC_SET(&_g_kq_capture, 0);
+                break;
+            }
+        }
+    }
+    int rc = real(kq, changelist, nchanges, eventlist, nevents, timeout);
+    if (rc >= 0
+        && rc < nevents
+        && ATOMIC_CAS(&_g_kq_inject, 1, 0)) {
+        EV_SET(&eventlist[rc], _g_kq_ident, EVFILT_READ, EV_ERROR, 0, ENOMEM, _g_kq_udata);
+        rc++;
+        ATOMIC_ADD(&_g_kq_injected, 1);
+    }
+    return rc;
+}
+static void _kq_noop(void *arg) {
+    (void)arg;
+}
+static int32_t _kqlost_on_acp(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud) {
+    (void)ev; (void)sk; (void)ud;
+    ATOMIC_ADD(&_g_kq_nacc, 1);
+    return ERR_OK;
+}
+// 监听丢了 knote：先把已排着的连接接完再退出监听；之后再连被拒，unlisten 与停机照常
+static void test_ev_kq_lsn_lost(CuTest *tc) {
+    enum { NCONN = 5 };
+    ev_ctx ev;
+    cbs_ctx cbs;
+    uint64_t id;
+    SOCKET fds[NCONN];
+    int32_t i, nconn = 0;
+    ZERO(&cbs, sizeof(cbs));
+    cbs.acp_cb = _kqlost_on_acp;
+    cbs.r_cb = _acp_opts_on_recv;
+    ATOMIC_SET(&_g_kq_nacc, 0);
+    ATOMIC_SET(&_g_kq_inject, 0);
+    ATOMIC_SET(&_g_kq_injected, 0);
+    ev_init(&ev, 1, NULL);
+    ATOMIC_SET(&_g_kq_capture, 1);
+    int32_t lrtn = ev_listen(&ev, NULL, "127.0.0.1", KQ_LOST_PORT, &cbs, NULL, NULL, 0, &id);
+    for (i = 0; i < 1000 && 0 != ATOMIC_GET(&_g_kq_capture); i++) {
+        MSLEEP(1);
+    }
+    int32_t captured = (0 == ATOMIC_GET(&_g_kq_capture));
+    ATOMIC_SET(&_g_kq_capture, 0);
+    for (i = 0; i < NCONN; i++) {
+        fds[i] = (ERR_OK == lrtn && captured) ? _connect_local(KQ_LOST_PORT, 0) : INVALID_SOCK;
+        if (INVALID_SOCK != fds[i]) {
+            nconn++;
+        }
+    }
+    if (captured) {
+        ATOMIC_SET(&_g_kq_inject, 1);
+        ev_defer_exec(&ev, 0, _kq_noop, NULL, NULL);// 投条命令把事件线程叫醒
+    }
+    for (i = 0; i < 3000
+         && (0 == ATOMIC_GET(&_g_kq_injected) || (int32_t)ATOMIC_GET(&_g_kq_nacc) < nconn); i++) {
+        MSLEEP(1);
+    }
+    MSLEEP(50);
+    SOCKET late = _connect_local(KQ_LOST_PORT, 0);
+    int32_t late_ok = (INVALID_SOCK != late);
+    CLOSE_SOCK(late);
+    for (i = 0; i < NCONN; i++) {
+        CLOSE_SOCK(fds[i]);
+    }
+    ev_unlisten(&ev, id);
+    ev_free(&ev);
+    CuAssertIntEquals(tc, ERR_OK, lrtn);
+    CuAssertTrue(tc, captured);
+    CuAssertIntEquals(tc, NCONN, nconn);
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_kq_injected));
+    CuAssertIntEquals(tc, NCONN, (int32_t)ATOMIC_GET(&_g_kq_nacc));
+    CuAssertIntEquals(tc, 0, late_ok);
+}
+#endif
 static void test_ev_slow_reader(CuTest *tc) {
     ev_ctx ev;
     cbs_ctx cbs;
@@ -3701,6 +4000,7 @@ void test_event(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_ev_udp_close_in_recv);
     SUITE_ADD_TEST(suite, test_ev_udp_reuseaddr);
     SUITE_ADD_TEST(suite, test_ev_udp_mcast_opt);
+    SUITE_ADD_TEST(suite, test_ev_udp_mcast_opt6);
     SUITE_ADD_TEST(suite, test_ev_close_in_recv_deferred);
     SUITE_ADD_TEST(suite, test_ev_close_in_acp_conn_deferred);
 #if WITH_SSL
@@ -3708,6 +4008,7 @@ void test_event(CuSuite *suite) {
 #endif
 #if defined(EV_EPOLL)
     SUITE_ADD_TEST(suite, test_ev_close_in_conn_fail);
+    SUITE_ADD_TEST(suite, test_ev_close_connecting_rearm_fail);
     SUITE_ADD_TEST(suite, test_ev_conn_fail_epoll_del);
     SUITE_ADD_TEST(suite, test_ev_conn_fail_send);
 #endif
@@ -3737,6 +4038,10 @@ void test_event(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_ev_sendq_overflow);
 #endif
     SUITE_ADD_TEST(suite, test_ev_slow_reader);
+    SUITE_ADD_TEST(suite, test_ev_slow_reader_close);
+#if defined(EV_KQUEUE) && defined(RTLD_NEXT)
+    SUITE_ADD_TEST(suite, test_ev_kq_lsn_lost);
+#endif
 #if 0 != CLOSE_LINGER_MS
     SUITE_ADD_TEST(suite, test_ev_linger_late_data);
     SUITE_ADD_TEST(suite, test_ev_linger_timeout);
@@ -3750,6 +4055,7 @@ void test_event(CuSuite *suite) {
 #if WITH_SSL
     SUITE_ADD_TEST(suite, test_evssl_read_close_notify);
     SUITE_ADD_TEST(suite, test_evssl_host);
+    SUITE_ADD_TEST(suite, test_evssl_min_proto);
     SUITE_ADD_TEST(suite, test_ssl_write_wants_read);
     SUITE_ADD_TEST(suite, test_ev_ssl_merge_send);
     SUITE_ADD_TEST(suite, test_ev_ssl_slow_reader);

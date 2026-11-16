@@ -144,8 +144,7 @@ static int32_t _lssl_seclevel(lua_State *lua) {
 ///            TLS1_3_VERSION(0x0304)
 ///        表外的值报错
 /// </param>
-/// <returns type="boolean">设置成功 true；该版本被当前构建或安全级别排除时 false，此时最低版本
-/// 保持原样。不判返回值就会以为下限抬上去了，实际仍在接受更低的版本。WITH_SSL 关闭时恒 false</returns>
+/// <returns type="boolean">设置成功 true；表外的值直接报参数错误。WITH_SSL 关闭时恒 false</returns>
 static int32_t _lssl_min_proto(lua_State *lua) {
 #if WITH_SSL
     LPUB_LUD_ARG(lua, struct evssl_ctx, 1, ssl);

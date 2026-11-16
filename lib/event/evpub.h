@@ -19,7 +19,7 @@
 #define QUEUE_OVERLOAD_RATIO 3 // 队列积压告警初始阈值 = 容量 / RATIO，触发后翻倍，空队列重置
 #define WB_WARN_INIT_SIZE   (1024 * 1024) // 单 sock 发送缓冲字节告警首阈值；触发后翻倍（1MB→2MB→4MB...），队列清空后复位；0 表示禁用
 #define EVENT_TICK_MIN       10// event 线程周期驱动(ev_tick)的最小间隔(毫秒),防 tick 返回 0 忙轮询
-#define ACCEPT_BACKOFF_MS    500// accept 遇资源耗尽(EMFILE / ENFILE / ENOBUFS / ENOMEM)后暂停监听、退避重试的间隔(毫秒)
+#define ACCEPT_BACKOFF_MS    500// accept 遇不可重试的错误(如 EMFILE)后暂停监听、退避重试的间隔(毫秒)
 #define ACCEPT_ROUND_MAX     16// 水平触发下监听 socket 每轮最多 accept 几条，没接完的下一轮再报；积压多时不让同线程别的连接干等。须 > 0
 #define UDP_RECV_MAX_ERRS    3// 单次唤醒内 recvmsg 连续失败上限；超限认定 fd 异常转关闭，防不消耗 datagram 的错误原地打转
 #define CLOSE_LINGER_MS      3000// 本端主动关闭后继续读掉对端数据的最长时间(毫秒，机制见 STATUS_LINGER)；0 表示不延迟关闭

@@ -182,7 +182,7 @@ int32_t ev_sendto_addr(ev_ctx *ctx, sock_ctx *sk, const netaddr_ctx *addr,
 ///   (IPv6 socket 强制 v6only 后收不到 IPv4 流量)。IPv4 须在 224.0.0.0/4 段(例 "239.0.0.1"); IPv6 须 ff00::/8 段(例 "ff02::1")</param>
 /// <param name="iface_str">接收网卡。IPv4 走网卡 IP 字符串(例 "192.168.1.100"); IPv6 走接口名(例 "en0"，Windows 上不认、一律走系统默认); NULL 走系统默认</param>
 /// <returns>ERR_OK 只表示参数合法且命令已入队。调用方契约违反同步返 ERR_FAILED:fd 无效、group_ip 为
-///   NULL / 过长 / 不是合法 IP / 与 socket 不同族 / 不是多播地址，iface_str 过长。setsockopt 本身在事件线程执行,成败不回传——
+///   NULL / 过长 / 不是合法 IP / 与 socket 不同族 / 不是多播地址，iface_str 过长或认不出(IPv4 不是合法 IP，Unix 上 IPv6 接口名不存在)。setsockopt 本身在事件线程执行,成败不回传——
 ///   失败只有一条 LOG_ERROR。下面 leave / ttl / loop 同此契约</returns>
 int32_t ev_udp_join(ev_ctx *ctx, sock_ctx *sk, const char *group_ip, const char *iface_str);
 /// <summary>
@@ -224,7 +224,8 @@ int32_t ev_udp_loop(ev_ctx *ctx, sock_ctx *sk, int32_t enable);
 ///   fd 为 INVALID_SOCK 时 ERR_FAILED</returns>
 int32_t ev_close(ev_ctx *ctx, sock_ctx *sk);
 /// <summary>
-/// 取消监听
+/// 取消监听。只发起拆除，返回时监听 socket 可能还没关：紧接着在同一端口再 listen 可能失败(Windows 报端口占用)，
+/// 返回后也可能还有已接下的连接回调进来。id 无效时什么也不做
 /// </summary>
 /// <param name="ctx">ev_ctx</param>
 /// <param name="id">监听ID</param>

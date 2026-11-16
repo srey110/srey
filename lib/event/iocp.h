@@ -108,8 +108,8 @@ void _iocp_add_conn_inloop(watcher_ctx *watcher, struct evsock_ctx *evsk, netadd
 void _iocp_add_fd_inloop(watcher_ctx *watcher, struct evsock_ctx *evsk);
 // 提交WSARecv异步接收请求
 int32_t _iocp_post_recv(evsock_ctx *evsk, DWORD *bytes, DWORD *flag, IOV_TYPE *wsabuf, DWORD niov);
-// 将数据加入TCP发送队列。未在发送时：明文挂进 watcher->flushes 攒着不立即发(已在链上且攒满
-// MAX_SEND_NIOV 条就先同步发一批)，SSL 投 0 字节探针排到完成回调里发
+// 将数据加入TCP发送队列。未在发送时：挂进 watcher->flushes 攒着不立即发(已在链上且攒满
+// MAX_SEND_NIOV 条就先同步发一批)，明文与 SSL 一样
 void _iocp_add_bufs_trypost(watcher_ctx *watcher, evsock_ctx *evsk, off_buf_ctx *buf);
 // 把 watcher->flushes 上攒的连接逐个同步发出，发不完的投 AFD 轮询等可写接力。
 // 由事件线程在整轮派发后、以及进等待前抽完命令后调用

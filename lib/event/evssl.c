@@ -174,6 +174,11 @@ void evssl_seclevel(evssl_ctx *evssl, int32_t level) {
     SSL_CTX_set_security_level(evssl->ssl, level);
 }
 int32_t evssl_min_proto(evssl_ctx *evssl, int32_t version) {
+    // OpenSSL 对 SSL3、DTLS 号也返回成功(DTLS 号在 TLS 方法上直接忽略)，表外的值在这里挡掉
+    if (0 != version
+        && (version < TLS1_VERSION || version > TLS1_3_VERSION)) {
+        return ERR_FAILED;
+    }
     return (1 == SSL_CTX_set_min_proto_version(evssl->ssl, version)) ? ERR_OK : ERR_FAILED;
 }
 // 设证书校验要比对的名字：先当 IP，不是再当主机名(即 SSL_set1_host 的实现，它在 OpenSSL 4.0 弃用了)

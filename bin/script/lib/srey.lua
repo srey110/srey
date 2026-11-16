@@ -1347,7 +1347,8 @@ end
 ---@type fun():userdata
 srey.sock_invalid = core.sock_invalid
 
----停止监听（关闭监听 socket），已建立的连接不受影响
+---停止监听，已建立的连接不受影响。只发起拆除，返回时监听 socket 可能还没关：
+---紧接着在同一端口再 listen 可能失败，返回后也可能还有新连接进来
 ---@type fun(lsnid:integer)
 srey.unlisten = core.unlisten
 ---@param msg Message

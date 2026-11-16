@@ -99,7 +99,7 @@ void evssl_seclevel(evssl_ctx *evssl, int32_t level);
 ///            TLS1_2_VERSION(0x0303)
 ///            TLS1_3_VERSION(0x0304)
 /// </param>
-/// <returns>ERR_OK 成功。版本号不在上表内、或该版本被当前构建/安全级别排除时返回 ERR_FAILED，
+/// <returns>ERR_OK 成功。版本号不在上表内时返回 ERR_FAILED，
 /// 此时最低版本保持原样——不判返回值就会以为下限抬上去了，实际仍在接受更低的版本</returns>
 int32_t evssl_min_proto(evssl_ctx *evssl, int32_t version);
 /// <summary>

@@ -496,7 +496,7 @@ static void _uev_loop_event(void *arg) {
                 } else {
                     LOG_ERROR("watcher %d listener fd %d lost its knote, no longer accepts.",
                               watcher->index, (int32_t)evsk->sk.fd);
-                    // 先把已排着的连接全接走(evdata 置负，不受每轮上限)，再退出监听；接的过程中重挂失败已关过的(ev_cb 已清)不再关
+                    // 先把已排着的连接全接走(evdata 置负，不受每轮上限)，再退出监听；回调里同线程 ev_unlisten 已摘掉的(ev_cb 已清)不再关
                     watcher->evdata = -1;
                     evsk->ev_cb(watcher, evsk, (EVENT_READ | EVENT_WRITE));
                     if (NULL != evsk->ev_cb) {

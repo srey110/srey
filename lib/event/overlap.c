@@ -48,7 +48,7 @@ typedef struct overlap_tcp_ctx {
     DWORD bytes_s;          // WSASend发送字节数
     DWORD flag;             // WSARecv标志
     int32_t spolling;       // ol_s 上在途的是等可写的 AFD 轮询而不是 WSASend，取消目标随之不同，见 _iocp_cancel_io
-    SOCKET base;            // AFD 轮询认的 base socket；取不到为 INVALID_SOCK，等可写退回 0 字节探针
+    SOCKET base;            // AFD 轮询认的 base socket；取不到或轮询投递失败为 INVALID_SOCK，等可写退回 0 字节探针
     HANDLE afd;             // 所属 watcher 的 AFD 句柄；NULL 同上
     afd_poll_info spoll;    // 在途 AFD 轮询的参数兼结果，完成前不能动
 #if WITH_SSL
@@ -204,7 +204,7 @@ void _iocp_disconnect(evsock_ctx *evsk) {
         if (BIT_CHECK(tcp->status, STATUS_ERROR)) {
             return;
         }
-        // ev_send 在本平台只入队(明文等轮末发,SSL 等探针完成),payload 此刻还在 buf_s,不冲就是整包丢
+        // ev_send 在本平台只入队(等轮末发),payload 此刻还在 buf_s,不冲就是整包丢
         _evpub_close_flush_tcp(tcp->ol_s.sk.fd, &tcp->buf_s, tcp->status, &tcp->wb_size, TCP_SSL(tcp));
         BIT_SET(tcp->status, STATUS_ERROR);
         if (_evpub_linger_want(tcp->status)) {
@@ -373,7 +373,7 @@ static inline int32_t _olp_post_send(overlap_tcp_ctx *oltcp) {
 // 它立即完成、再写还是写不进，对端不读时 watcher 吃满一核。这里改在 ol_s 上投 \Device\Afd 轮询，
 // 真正可写或对端 RST 才完成；它投在 AFD 句柄上，取消要对那个句柄取消，见 _iocp_cancel_io。
 // IO_STATUS_BLOCK 借 OVERLAPPED 头两个字段、ApcContext 也传它，完成包的 lpOverlapped 就是 ol_s。
-// 没有 AFD 句柄或 base socket 的连接退回 0 字节探针
+// 没有 AFD 句柄或 base socket、或轮询同步投递失败的连接退回 0 字节探针
 static inline int32_t _olp_post_send_wait(overlap_tcp_ctx *oltcp) {
     if (NULL == oltcp->afd
         || INVALID_SOCK == oltcp->base) {
@@ -393,9 +393,13 @@ static inline int32_t _olp_post_send_wait(overlap_tcp_ctx *oltcp) {
                                IOCTL_AFD_POLL, &oltcp->spoll, (ULONG)sizeof(oltcp->spoll),
                                &oltcp->spoll, (ULONG)sizeof(oltcp->spoll));
     if (0 != st
-        && AFD_STATUS_PENDING != st) {// 同步失败不进完成队列
-        _evpub_mark_close(&oltcp->status, ERR_FAILED);
-        return ERR_FAILED;
+        && AFD_STATUS_PENDING != st) {// 同步失败不进完成队列；与对端无关，不断连
+        static atomic_t warned = 0;
+        if (ATOMIC_CAS(&warned, 0, 1)) {
+            LOG_WARN("fd %d: AFD poll failed (0x%x), fall back to zero-byte send.", (int32_t)oltcp->ol_r.sk.fd, (uint32_t)st);
+        }
+        oltcp->base = INVALID_SOCK;
+        return _olp_post_send(oltcp);
     }
     oltcp->spolling = 1;
     return ERR_OK;
@@ -1012,7 +1016,7 @@ void _iocp_add_bufs_trypost(watcher_ctx *watcher, evsock_ctx *evsk, off_buf_ctx 
     if (BIT_CHECK(oltcp->status, STATUS_SENDING)) {
         return;
     }
-    // 已在攒发链上(只挂明文)：堆满一次 iov 就先发一批，免得一轮里的巨量 ev_send 全压到轮末
+    // 已在攒发链上：堆满一次 iov 就先发一批，免得一轮里的巨量 ev_send 全压到轮末
     if (BIT_CHECK(oltcp->status, STATUS_FLUSHPEND)) {
         if (obuf_que_size(&oltcp->buf_s) >= MAX_SEND_NIOV) {
             _olp_flush_unlink(watcher, oltcp);
@@ -1020,23 +1024,16 @@ void _iocp_add_bufs_trypost(watcher_ctx *watcher, evsock_ctx *evsk, off_buf_ctx 
         }
         return;
     }
-    // 明文挂进攒发链，等本轮派发完由 _iocp_flush_pending 同步发，同一轮的多条合成一次 WSASend；
-    // SSL 投 0 字节探针，排到完成回调里发；写不进了再改等可写
-    if (NULL == TCP_SSL(oltcp)) {
-        _olp_flush_link(watcher, oltcp);
-        return;
-    }
-    if (ERR_OK != _olp_wantwrite(oltcp)) {
-        _iocp_disconnect(&oltcp->ol_r);
-    }
+    // 挂进攒发链，等本轮派发完由 _iocp_flush_pending 同步发，同一轮的多条合成一次发送(SSL 同明文)；写不进了再改等可写
+    _olp_flush_link(watcher, oltcp);
 }
 void _iocp_flush_pending(watcher_ctx *watcher) {
     overlap_tcp_ctx *oltcp;
     while (NULL != watcher->flushes.head) {
         oltcp = UPCAST(watcher->flushes.head, overlap_tcp_ctx, flush_node);
         _olp_flush_unlink(watcher, oltcp);
-        // 挂链之后同一轮又被关掉：队列已由关闭路径接管
-        if (BIT_CHECK(oltcp->status, STATUS_ERROR | STATUS_SENDING)
+        // 挂链之后同一轮又被关掉：队列已由关闭路径接管；KeyUpdate 方向 B 挂着的留给 _olp_on_recv_cb 那次重试
+        if (BIT_CHECK(oltcp->status, STATUS_ERROR | STATUS_SENDING | STATUS_KEYUPDATE_READ)
             || obuf_que_empty(&oltcp->buf_s)) {
             continue;
         }
@@ -1270,6 +1267,7 @@ static void _olp_try_revive_slot(ev_ctx *ev, listener_ctx *lsn) {
         }
         if (0 != ATOMIC_GET(&lsn->remove)) {
             // _olp_post_accept 执行期间 ev_unlisten 可能运行但未能关闭新 fd(对齐 _olp_on_accept_cb 同一时机的处理)
+            CancelIoEx((HANDLE)lsn->fd, &olacp->overlap.overlapped);
             _olp_take_close(&olacp->overlap.sk.fd);
         }
     }
@@ -1328,7 +1326,9 @@ static void _olp_on_accept_cb(acceptex_ctx *acpctx, evsock_ctx *evsk, DWORD byte
             LOG_ERROR("AcceptEx slot failed to re-post, listener fd %d.", (int32_t)lsn->fd);
         }
     } else if (0 != ATOMIC_GET(&lsn->remove)) {
-        // _olp_post_accept 执行期间 ev_unlisten 可能运行但未能关闭新 fd，返回后需补关
+        // _olp_post_accept 执行期间 ev_unlisten 可能运行但未能关闭新 fd，返回后需补关；
+        // 它的取消也早于这次投递，本槽要自己取消
+        CancelIoEx((HANDLE)lsn->fd, &olacp->overlap.overlapped);
         _olp_take_close(&olacp->overlap.sk.fd);
     }
     if (acpfail) {
